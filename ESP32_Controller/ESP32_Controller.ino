@@ -29,7 +29,7 @@ public:
     auto bcfg = _bus_instance.config();
     bcfg.spi_host   = VSPI_HOST;
     bcfg.spi_mode   = 0;
-    bcfg.freq_write = 27000000;
+    bcfg.freq_write = 65000000;
     bcfg.freq_read  = 16000000;
     bcfg.pin_sclk   = 18;
     bcfg.pin_mosi   = 23;
@@ -50,10 +50,10 @@ public:
     _panel_instance.config(pcfg);
 
     auto tcfg = _touch_instance.config();
-    tcfg.x_min      = 300;
-    tcfg.x_max      = 3800;
-    tcfg.y_min      = 300;
-    tcfg.y_max      = 3800;
+tcfg.x_min = 300;
+tcfg.x_max = 3800;
+tcfg.y_min = 3800;   // swapped
+tcfg.y_max = 300;    // swapped
     tcfg.pin_cs     = 21;
     tcfg.bus_shared = true;
     tcfg.spi_host   = VSPI_HOST;
@@ -71,12 +71,36 @@ static lv_disp_draw_buf_t draw_buf;
 static lv_color_t *buf = nullptr;
 
 // LVGL Widgets
+lv_obj_t * scr_image;
+lv_obj_t * top_panel;
+lv_obj_t * scr_config;
+lv_obj_t * scr_stats;
 lv_obj_t * label_status;
 lv_obj_t * label_ram;
 lv_obj_t * label_notify;
 
+// Top Layer Nav Buttons & Config Notifications
+lv_obj_t * nav_btn_left;
+lv_obj_t * nav_btn_right;
+lv_obj_t * btn_cog;
+lv_obj_t * label_config_notify;
+
+// Config Sliders/Switches
+lv_obj_t * sld_quality;
+lv_obj_t * sld_brightness;
+lv_obj_t * sld_contrast;
+lv_obj_t * sld_saturation;
+lv_obj_t * sld_framesize;
+lv_obj_t * sw_awb;
+lv_obj_t * sw_aec;
+lv_obj_t * sw_agc;
+lv_obj_t * sw_hmirror;
+lv_obj_t * sw_vflip;
+
 // Global flags
+int current_screen = 0; // 0: Image, 1: Config
 bool capture_requested = false;
+uint32_t notify_done_time = 0;
 
 HTTPClient http;
 WebServer server(80);
@@ -104,6 +128,39 @@ void freeImageBuffer();
 void captureImage();
 void displayImageOrText();
 void updateRAMUsage();
+void buildConfigScreen();
+void buildStatsScreen();
+void fetchAndApplyConfig();
+void sendConfigChanges();
+void switchScreen(int scr_id);
+
+// Simple JSON value extractor
+int getJsonVal(String json, String key) {
+  int idx = json.indexOf("\"" + key + "\":");
+  if (idx == -1) return -999;
+  idx += key.length() + 3;
+  int endIdx1 = json.indexOf(",", idx);
+  int endIdx2 = json.indexOf("}", idx);
+  int endIdx = -1;
+  if (endIdx1 != -1 && endIdx2 != -1) endIdx = min(endIdx1, endIdx2);
+  else if (endIdx1 != -1) endIdx = endIdx1;
+  else if (endIdx2 != -1) endIdx = endIdx2;
+  if (endIdx == -1) return -999;
+  return json.substring(idx, endIdx).toInt();
+}
+
+// LVGL Touch Read Callback
+void my_touch_read(lv_indev_drv_t * indev_driver, lv_indev_data_t * data) {
+  uint16_t touchX, touchY;
+  bool touched = tft.getTouch(&touchX, &touchY);
+  if (!touched) {
+    data->state = LV_INDEV_STATE_REL;
+  } else {
+    data->state = LV_INDEV_STATE_PR;
+    data->point.x = touchX;
+    data->point.y = touchY;
+  }
+}
 
 // LVGL Display Flush Callback
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
@@ -159,24 +216,107 @@ void setup() {
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
 
-  // Create UI
-  lv_obj_t * scr = lv_scr_act();
-  lv_obj_set_style_bg_color(scr, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+  // Register Touch Input Device
+  static lv_indev_drv_t indev_drv;
+  lv_indev_drv_init(&indev_drv);
+  indev_drv.type = LV_INDEV_TYPE_POINTER;
+  indev_drv.read_cb = my_touch_read;
+  lv_indev_drv_register(&indev_drv);
 
-  label_status = lv_label_create(scr);
+  // Create Screens
+  scr_image = lv_obj_create(NULL);
+  lv_obj_set_style_pad_all(scr_image, 0, 0);
+
+  // Top Section (Information)
+  top_panel = lv_obj_create(scr_image);
+  lv_obj_set_size(top_panel, screenWidth, 30);
+  lv_obj_align(top_panel, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_pad_all(top_panel, 0, 0);
+  lv_obj_set_style_border_width(top_panel, 0, 0);
+  lv_obj_set_style_radius(top_panel, 0, 0);
+  lv_obj_set_style_bg_color(top_panel, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+
+  // Body Section (Image View)
+  lv_obj_t * body_panel = lv_obj_create(scr_image);
+  lv_obj_set_size(body_panel, screenWidth, screenHeight - 30);
+  lv_obj_align(body_panel, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_pad_all(body_panel, 0, 0);
+  lv_obj_set_style_border_width(body_panel, 0, 0);
+  lv_obj_set_style_radius(body_panel, 0, 0);
+  lv_obj_set_style_bg_color(body_panel, lv_color_hex(0x969696), 0); // Dark grey background
+
+  scr_config = lv_obj_create(NULL);
+  lv_obj_set_style_pad_all(scr_config, 0, 0);
+  lv_obj_set_style_bg_color(scr_config, lv_color_hex(0x969696), 0); // Unified dark grey for entire screen area
+
+  scr_stats = lv_obj_create(NULL);
+  lv_obj_set_style_pad_all(scr_stats, 0, 0);
+  lv_obj_set_style_bg_color(scr_stats, lv_color_hex(0x969696), 0);
+
+  // Initialize UI components on Image Screen
+  label_status = lv_label_create(top_panel);
   lv_label_set_text(label_status, "Ready...");
   lv_obj_set_style_text_color(label_status, lv_color_white(), 0);
-  lv_obj_align(label_status, LV_ALIGN_TOP_LEFT, 10, 5);
+  lv_obj_align(label_status, LV_ALIGN_LEFT_MID, 10, 0);
 
-  label_ram = lv_label_create(scr);
+  label_ram = lv_label_create(top_panel);
   lv_label_set_text(label_ram, "RAM: --");
   lv_obj_set_style_text_color(label_ram, lv_color_white(), 0);
-  lv_obj_align(label_ram, LV_ALIGN_TOP_RIGHT, -10, 5);
+  lv_obj_align(label_ram, LV_ALIGN_RIGHT_MID, -10, 0);
 
-  label_notify = lv_label_create(scr);
+  label_notify = lv_label_create(top_panel);
   lv_label_set_text(label_notify, "Tap to capture");
   lv_obj_set_style_text_color(label_notify, lv_color_white(), 0);
-  lv_obj_align(label_notify, LV_ALIGN_TOP_MID, 0, 5);
+  lv_obj_align(label_notify, LV_ALIGN_CENTER, 0, 0);
+
+  buildConfigScreen();
+  buildStatsScreen();
+
+  // Create Top Layer Navigation Buttons
+  nav_btn_left = lv_btn_create(lv_layer_top());
+  lv_obj_set_size(nav_btn_left, 30, 100);
+  lv_obj_align(nav_btn_left, LV_ALIGN_LEFT_MID, 5, 0);
+  lv_obj_set_style_bg_color(nav_btn_left, lv_color_white(), 0);
+  lv_obj_set_style_bg_opa(nav_btn_left, LV_OPA_TRANSP, 0); // Fully transparent background
+  lv_obj_set_style_border_width(nav_btn_left, 1, 0);
+  lv_obj_set_style_border_color(nav_btn_left, lv_color_white(), 0);
+  lv_obj_set_style_radius(nav_btn_left, 5, 0); // Rounded corners to match manual drawing
+  lv_obj_add_event_cb(nav_btn_left, [](lv_event_t *e) { switchScreen(current_screen == 0 ? 2 : 0); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t * lbl_l = lv_label_create(nav_btn_left);
+  lv_label_set_text(lbl_l, "<");
+  lv_obj_set_style_text_color(lbl_l, lv_color_white(), 0);
+  lv_obj_center(lbl_l);
+
+  nav_btn_right = lv_btn_create(lv_layer_top());
+  lv_obj_set_size(nav_btn_right, 30, 100);
+  lv_obj_align(nav_btn_right, LV_ALIGN_RIGHT_MID, -5, 0);
+  lv_obj_set_style_bg_color(nav_btn_right, lv_color_white(), 0);
+  lv_obj_set_style_bg_opa(nav_btn_right, LV_OPA_TRANSP, 0); // Fully transparent background
+  lv_obj_set_style_border_width(nav_btn_right, 1, 0);
+  lv_obj_set_style_border_color(nav_btn_right, lv_color_white(), 0);
+  lv_obj_set_style_radius(nav_btn_right, 5, 0); // Rounded corners to match manual drawing
+  lv_obj_add_event_cb(nav_btn_right, [](lv_event_t *e) { switchScreen(current_screen == 0 ? 2 : 0); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t * lbl_r = lv_label_create(nav_btn_right);
+  lv_label_set_text(lbl_r, ">");
+  lv_obj_set_style_text_color(lbl_r, lv_color_white(), 0);
+  lv_obj_center(lbl_r);
+
+  // Create Cogwheel button for Config access (only on Image View)
+  btn_cog = lv_btn_create(lv_layer_top());
+  lv_obj_set_size(btn_cog, 40, 40);
+  lv_obj_align(btn_cog, LV_ALIGN_TOP_LEFT, 5, 35); // Top-left of body area
+  lv_obj_set_style_bg_color(btn_cog, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(btn_cog, LV_OPA_50, 0);
+  lv_obj_set_style_border_width(btn_cog, 1, 0);
+  lv_obj_set_style_border_color(btn_cog, lv_color_white(), 0);
+  lv_obj_set_style_radius(btn_cog, 5, 0);
+  lv_obj_add_event_cb(btn_cog, [](lv_event_t *e) { switchScreen(1); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t * lbl_cog = lv_label_create(btn_cog);
+  lv_label_set_text(lbl_cog, LV_SYMBOL_SETTINGS);
+  lv_obj_set_style_text_color(lbl_cog, lv_color_white(), 0);
+  lv_obj_center(lbl_cog);
+
+  switchScreen(0);
 
   // Connect to WiFi
   connectToWiFi();
@@ -202,14 +342,29 @@ void loop() {
   lv_timer_handler();
   updateRAMUsage();
 
-  // Polling touch directly to avoid LVGL redraw over JPEG
+  if (notify_done_time > 0 && millis() - notify_done_time > 2000) {
+    lv_label_set_text(label_notify, "Tap to capture");
+    notify_done_time = 0;
+  }
+
+  // Polling touch
   uint16_t x, y;
   static bool was_touched = false;
   bool is_touched = tft.getTouch(&x, &y);
-  if (is_touched && !was_touched) {
-    capture_requested = true;
-    lv_label_set_text(label_notify, "Capturing...");
-    lv_timer_handler(); // Redraw status label immediately
+  
+  if (current_screen == 0) { // Image Screen manual touch handling
+    if (is_touched && !was_touched) {
+      if (y > 30) {
+        if ((x < 45 || x > screenWidth - 45) && y > 100 && y < 220) {
+          switchScreen(2); // Go to Stats (toggle between 0 and 2)
+        } else if (x < 60 && y < 90) {
+          // Cogwheel area: do nothing, LVGL handles the button click
+        } else {
+          capture_requested = true;
+          lv_label_set_text(label_notify, "Capturing...");
+          lv_timer_handler();
+        }
+      }    }
   }
   was_touched = is_touched;
 
@@ -230,6 +385,279 @@ void updateRAMUsage() {
     uint32_t used_h = total_h - free_h;
     lv_label_set_text_fmt(label_ram, "RAM: %u/%u KB", used_h/1024, total_h/1024);
   }
+}
+
+void switchScreen(int scr_id) {
+  current_screen = scr_id;
+  if (scr_id == 0) {
+    lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(btn_cog, LV_OBJ_FLAG_HIDDEN); // Show cogwheel on Image View
+    lv_scr_load(scr_image);
+    
+    // Force LVGL to render the full screen before we draw raw TFT items
+    // LVGL refresh timer is ~30ms, so we wait slightly longer while processing tasks
+    uint32_t t = millis();
+    while (millis() - t < 50) {
+      lv_timer_handler();
+      delay(5);
+    }
+    
+    displayImageOrText();
+  } else if (scr_id == 1) {
+    lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(btn_cog, LV_OBJ_FLAG_HIDDEN); // Hide cogwheel on Config
+    freeImageBuffer(); // Clear current image from RAM when switching to config
+    lv_scr_load(scr_config);
+    fetchAndApplyConfig();
+  } else if (scr_id == 2) {
+    lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(btn_cog, LV_OBJ_FLAG_HIDDEN); // Hide cogwheel on Stats
+    freeImageBuffer();
+    lv_scr_load(scr_stats);
+  }
+}
+
+void fetchAndApplyConfig() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  lv_label_set_text(label_config_notify, "Fetching status...");
+  lv_timer_handler();
+
+  http.begin(String(cameraServerUrl) + "/status");
+  http.setTimeout(3000);
+  int code = http.GET();
+  if (code == 200) {
+    String json = http.getString();
+    auto setSld = [&](lv_obj_t* sld, String key) {
+      int val = getJsonVal(json, key);
+      if (val != -999) {
+        lv_slider_set_value(sld, val, LV_ANIM_OFF);
+        lv_event_send(sld, LV_EVENT_VALUE_CHANGED, NULL);
+      }
+    };
+    auto setSw = [&](lv_obj_t* sw, String key) {
+      int val = getJsonVal(json, key);
+      if (val != -999) {
+        if (val) lv_obj_add_state(sw, LV_STATE_CHECKED);
+        else lv_obj_clear_state(sw, LV_STATE_CHECKED);
+      }
+    };
+    setSld(sld_framesize, "framesize");
+    setSld(sld_quality, "quality");
+    setSld(sld_brightness, "brightness");
+    setSld(sld_contrast, "contrast");
+    setSld(sld_saturation, "saturation");
+    setSw(sw_awb, "awb");
+    setSw(sw_aec, "aec");
+    setSw(sw_agc, "agc");
+    setSw(sw_hmirror, "hmirror");
+    setSw(sw_vflip, "vflip");
+    
+    lv_label_set_text(label_config_notify, "Status loaded");
+  } else {
+    lv_label_set_text(label_config_notify, "Error: No respond");
+  }
+  http.end();
+}
+
+void sendConfigChanges() {
+  if (WiFi.status() != WL_CONNECTED) {
+    lv_label_set_text(label_config_notify, "Error: No WiFi");
+    return;
+  }
+  
+  lv_label_set_text(label_config_notify, "applying..");
+  lv_timer_handler();
+  
+  int success_count = 0;
+  int fail_count = 0;
+  
+  auto sendVal = [&](String key, int val) {
+    String url = String(cameraServerUrl) + "/control?var=" + key + "&val=" + String(val);
+    http.begin(url);
+    http.setTimeout(2000);
+    int code = http.GET();
+    if (code == 200) success_count++;
+    else fail_count++;
+    http.end();
+  };
+  
+  sendVal("framesize", lv_slider_get_value(sld_framesize));
+  sendVal("quality", lv_slider_get_value(sld_quality));
+  sendVal("brightness", lv_slider_get_value(sld_brightness));
+  sendVal("contrast", lv_slider_get_value(sld_contrast));
+  sendVal("saturation", lv_slider_get_value(sld_saturation));
+  sendVal("awb", lv_obj_has_state(sw_awb, LV_STATE_CHECKED) ? 1 : 0);
+  sendVal("aec", lv_obj_has_state(sw_aec, LV_STATE_CHECKED) ? 1 : 0);
+  sendVal("agc", lv_obj_has_state(sw_agc, LV_STATE_CHECKED) ? 1 : 0);
+  sendVal("hmirror", lv_obj_has_state(sw_hmirror, LV_STATE_CHECKED) ? 1 : 0);
+  sendVal("vflip", lv_obj_has_state(sw_vflip, LV_STATE_CHECKED) ? 1 : 0);
+  
+  if (fail_count > 0 && success_count == 0) {
+    lv_label_set_text(label_config_notify, "Error: No respond");
+  } else if (fail_count > 0) {
+    lv_label_set_text(label_config_notify, "Error: Can't apply all");
+  } else {
+    lv_label_set_text(label_config_notify, "applied");
+  }
+}
+
+lv_obj_t * create_slider(lv_obj_t * parent, const char * name, int min, int max, lv_obj_t ** slider) {
+    lv_obj_t * wrapper = lv_obj_create(parent);
+    lv_obj_set_size(wrapper, 210, 60);
+    lv_obj_set_style_pad_all(wrapper, 5, 0);
+    lv_obj_t * lbl = lv_label_create(wrapper);
+    lv_label_set_text(lbl, name);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 0, 0);
+    *slider = lv_slider_create(wrapper);
+    lv_slider_set_range(*slider, min, max);
+    lv_obj_set_size(*slider, 160, 10);
+    lv_obj_align(*slider, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_t * val_lbl = lv_label_create(wrapper);
+    lv_label_set_text(val_lbl, "0");
+    lv_obj_align(val_lbl, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_add_event_cb(*slider, [](lv_event_t * e) {
+        lv_obj_t * s = lv_event_get_target(e);
+        lv_obj_t * v = (lv_obj_t *)lv_event_get_user_data(e);
+        lv_label_set_text_fmt(v, "%d", lv_slider_get_value(s));
+    }, LV_EVENT_VALUE_CHANGED, val_lbl);
+    return wrapper;
+}
+
+lv_obj_t * create_switch(lv_obj_t * parent, const char * name, lv_obj_t ** sw) {
+    lv_obj_t * wrapper = lv_obj_create(parent);
+    lv_obj_set_size(wrapper, 210, 45);
+    lv_obj_set_style_pad_all(wrapper, 5, 0);
+    lv_obj_t * lbl = lv_label_create(wrapper);
+    lv_label_set_text(lbl, name);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+    *sw = lv_switch_create(wrapper);
+    lv_obj_set_size(*sw, 40, 20);
+    lv_obj_align(*sw, LV_ALIGN_RIGHT_MID, 0, 0);
+    return wrapper;
+}
+
+void buildStatsScreen() {
+  // Top Section
+  lv_obj_t * top_panel_stats = lv_obj_create(scr_stats);
+  lv_obj_set_size(top_panel_stats, screenWidth, 30);
+  lv_obj_align(top_panel_stats, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_pad_all(top_panel_stats, 0, 0);
+  lv_obj_set_style_border_width(top_panel_stats, 0, 0);
+  lv_obj_set_style_radius(top_panel_stats, 0, 0);
+  lv_obj_set_style_bg_color(top_panel_stats, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+
+  lv_obj_t * title = lv_label_create(top_panel_stats);
+  lv_label_set_text(title, "Statistics Dashboard");
+  lv_obj_set_style_text_color(title, lv_color_white(), 0);
+  lv_obj_align(title, LV_ALIGN_LEFT_MID, 10, 0);
+
+  // Body container (Centered, 400px)
+  lv_obj_t * cont = lv_obj_create(scr_stats);
+  lv_obj_set_size(cont, 400, screenHeight - 30);
+  lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_all(cont, 15, 0);
+  lv_obj_set_style_border_width(cont, 0, 0);
+  lv_obj_set_style_radius(cont, 0, 0);
+  lv_obj_set_style_bg_color(cont, lv_color_hex(0x969696), 0);
+  lv_obj_set_style_text_color(cont, lv_color_white(), 0);
+
+  // Stats content
+  lv_obj_t * lbl_today = lv_label_create(cont);
+  lv_label_set_text(lbl_today, "Camera Triggered Today: 12");
+  lv_obj_set_width(lbl_today, 360);
+  lv_obj_set_style_text_align(lbl_today, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_pad_bottom(lbl_today, 20, 0);
+
+  lv_obj_t * lbl_chart = lv_label_create(cont);
+  lv_label_set_text(lbl_chart, "Camera triggered last 7 days");
+  lv_obj_set_width(lbl_chart, 360);
+  lv_obj_set_style_text_align(lbl_chart, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_pad_bottom(lbl_chart, 5, 0);
+
+  // Line chart
+  lv_obj_t * chart = lv_chart_create(cont);
+  lv_obj_set_size(chart, 360, 160);
+  lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(chart, 7);
+  lv_obj_set_style_bg_color(chart, lv_color_black(), 0);
+  lv_obj_set_style_border_color(chart, lv_color_white(), 0);
+  lv_obj_set_style_line_width(chart, 2, LV_PART_ITEMS);
+
+  lv_chart_series_t * ser = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
+  lv_chart_set_next_value(chart, ser, 5);
+  lv_chart_set_next_value(chart, ser, 12);
+  lv_chart_set_next_value(chart, ser, 8);
+  lv_chart_set_next_value(chart, ser, 15);
+  lv_chart_set_next_value(chart, ser, 4);
+  lv_chart_set_next_value(chart, ser, 20);
+  lv_chart_set_next_value(chart, ser, 12);
+}
+
+void buildConfigScreen() {
+  // Top Section (Information)
+  lv_obj_t * top_panel_cfg = lv_obj_create(scr_config);
+  lv_obj_set_size(top_panel_cfg, screenWidth, 30);
+  lv_obj_align(top_panel_cfg, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_pad_all(top_panel_cfg, 0, 0);
+  lv_obj_set_style_border_width(top_panel_cfg, 0, 0);
+  lv_obj_set_style_radius(top_panel_cfg, 0, 0);
+  lv_obj_set_style_bg_color(top_panel_cfg, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+
+  // Back Button
+  lv_obj_t * btn_back_cfg = lv_btn_create(top_panel_cfg);
+  lv_obj_set_size(btn_back_cfg, 100, 30);
+  lv_obj_align(btn_back_cfg, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_style_bg_opa(btn_back_cfg, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_shadow_width(btn_back_cfg, 0, 0);
+  lv_obj_add_event_cb(btn_back_cfg, [](lv_event_t *e) { switchScreen(0); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t * lbl_back_cfg = lv_label_create(btn_back_cfg);
+  lv_label_set_text(lbl_back_cfg, LV_SYMBOL_LEFT " Config");
+  lv_obj_set_style_text_color(lbl_back_cfg, lv_color_white(), 0);
+  lv_obj_center(lbl_back_cfg);
+
+  label_config_notify = lv_label_create(top_panel_cfg);
+  lv_label_set_text(label_config_notify, "");
+  lv_obj_set_style_text_color(label_config_notify, lv_color_white(), 0);
+  lv_obj_align(label_config_notify, LV_ALIGN_CENTER, 0, 0);
+
+  // Body container (Scrollable)
+  lv_obj_t * cont = lv_obj_create(scr_config);
+  lv_obj_set_size(cont, 400, screenHeight - 30); // Narrower width to leave margins for side buttons
+  lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_ROW_WRAP);
+  lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START); // Center items horizontally
+  lv_obj_set_style_pad_all(cont, 10, 0);
+  lv_obj_set_style_border_width(cont, 0, 0);
+  lv_obj_set_style_radius(cont, 0, 0);
+  lv_obj_set_style_bg_color(cont, lv_color_hex(0x969696), 0); // Dark grey background
+  lv_obj_set_style_text_color(cont, lv_color_white(), 0);
+
+  // Apply button inside the container at the top
+  lv_obj_t * btn_apply = lv_btn_create(cont);
+  lv_obj_set_size(btn_apply, 360, 40); // Adjusted to fit 400px container width (minus padding)
+  lv_obj_t * lbl_apply = lv_label_create(btn_apply);
+  lv_label_set_text(lbl_apply, "Apply Settings");
+  lv_obj_center(lbl_apply);
+  lv_obj_add_event_cb(btn_apply, [](lv_event_t *e) { sendConfigChanges(); }, LV_EVENT_CLICKED, NULL);
+
+  create_slider(cont, "Framesize", 0, 13, &sld_framesize);
+  create_slider(cont, "Quality", 0, 63, &sld_quality);
+  create_slider(cont, "Brightness", -2, 2, &sld_brightness);
+  create_slider(cont, "Contrast", -2, 2, &sld_contrast);
+  create_slider(cont, "Saturation", -2, 2, &sld_saturation);
+  
+  create_switch(cont, "AWB", &sw_awb);
+  create_switch(cont, "AEC", &sw_aec);
+  create_switch(cont, "AGC", &sw_agc);
+  create_switch(cont, "Mirror", &sw_hmirror);
+  create_switch(cont, "Flip", &sw_vflip);
 }
 
 void connectToWiFi() {
@@ -373,9 +801,13 @@ void handleCapture() {
   if (imageBuffer && imageBufferSize > 0) {
     displayImageOrText();
     lv_label_set_text(label_notify, "Done");
+    notify_done_time = millis();
+    if(notify_done_time == 0) notify_done_time = 1;
     server.send(200, "application/json", "{\"status\": \"ok\", \"size\": " + String(imageBufferSize) + "}");
   } else {
     lv_label_set_text(label_notify, "Error");
+    notify_done_time = millis();
+    if(notify_done_time == 0) notify_done_time = 1;
     server.send(500, "application/json", "{\"error\": \"Capture fail\"}");
   }
 }
@@ -414,6 +846,11 @@ bool getJpgSize(const uint8_t* data, size_t len, uint16_t *w, uint16_t *h) {
 }
 
 void displayImageOrText() {
+  if (current_screen != 0) return; // Only draw on image screen
+  
+  // Clear the image area with dark grey before drawing to match LVGL background
+  tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
+
   if (imageBuffer && imageBufferSize > 0) {
     uint16_t img_w = 0, img_h = 0;
     float scale = 1.0f;
@@ -428,9 +865,6 @@ void displayImageOrText() {
       scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
     }
 
-    // Clear the image area with black before drawing the new image
-    tft.fillRect(0, 30, screenWidth, screenHeight - 30, TFT_BLACK);
-    
     // Center the image horizontally and vertically
     int32_t x_offset = (screenWidth - (img_w * scale)) / 2;
     int32_t y_offset = 30 + ((screenHeight - 30) - (img_h * scale)) / 2;
@@ -441,13 +875,29 @@ void displayImageOrText() {
     tft.drawJpg(imageBuffer, imageBufferSize, x_offset, y_offset, 0, 0, 0, 0, scale, scale);
     
     if (img_w > 0) {
-      lv_label_set_text_fmt(label_status, "Captured: %dx%d (%.1fx)", img_w, img_h, scale);
+      lv_label_set_text_fmt(label_status, "Res: %dx%d (%.1fx)", img_w, img_h, scale);
     } else {
-      lv_label_set_text_fmt(label_status, "Captured: %d Bytes", imageBufferSize);
+      lv_label_set_text_fmt(label_status, "Size: %d B", imageBufferSize);
     }
   } else {
-    lv_label_set_text(label_status, "Capture Failed!");
+    lv_label_set_text(label_status, "Waiting...");
   }
+
+  // Force LVGL to redraw the top header and cogwheel on top of the image
+  lv_obj_invalidate(top_panel); 
+  lv_obj_invalidate(btn_cog);
+  lv_timer_handler();
+
+  // Draw Glass-like buttons (outline) - ALWAYS on screen 0
+  tft.drawRoundRect(5, 110, 30, 100, 5, TFT_WHITE);
+  tft.drawRoundRect(screenWidth - 35, 110, 30, 100, 5, TFT_WHITE);
+  
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(12, 150);
+  tft.print("<");
+  tft.setCursor(screenWidth - 25, 150);
+  tft.print(">");
 }
 
 const char* getHtmlUI() {
