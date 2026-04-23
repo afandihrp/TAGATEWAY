@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
 #include <esp_heap_caps.h>
 #include <lvgl.h>
 #define LGFX_USE_V1
@@ -70,11 +71,26 @@ LGFX tft;
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t *buf = nullptr;
 
+// Device Info Struct
+struct DeviceInfo {
+  String mac;
+  String ip;
+};
+
+DeviceInfo devices[5] = {
+  {"BC:DD:C2:E1:92:44", "192.168.1.50"},
+  {"40:22:D8:F5:21:09", "192.168.1.51"},
+  {"A2:77:C1:22:BB:EF", "192.168.1.52"},
+  {"", ""},
+  {"" ,""}
+};
+
 // LVGL Widgets
 lv_obj_t * scr_image;
 lv_obj_t * top_panel;
 lv_obj_t * scr_config;
 lv_obj_t * scr_stats;
+lv_obj_t * scr_devices;
 lv_obj_t * label_status;
 lv_obj_t * label_ram;
 lv_obj_t * label_notify;
@@ -129,6 +145,7 @@ void displayImageOrText();
 void updateRAMUsage();
 void buildConfigScreen();
 void buildStatsScreen();
+void buildDevicesScreen();
 void fetchAndApplyConfig();
 void sendConfigChanges();
 void switchScreen(int scr_id);
@@ -242,15 +259,19 @@ void setup() {
   lv_obj_set_style_pad_all(body_panel, 0, 0);
   lv_obj_set_style_border_width(body_panel, 0, 0);
   lv_obj_set_style_radius(body_panel, 0, 0);
-  lv_obj_set_style_bg_color(body_panel, lv_color_hex(0x969696), 0); // Dark grey background
+  lv_obj_set_style_bg_color(body_panel, lv_color_hex(0x202020), 0); // Dark grey background
 
   scr_config = lv_obj_create(NULL);
   lv_obj_set_style_pad_all(scr_config, 0, 0);
-  lv_obj_set_style_bg_color(scr_config, lv_color_hex(0x969696), 0); // Unified dark grey for entire screen area
+  lv_obj_set_style_bg_color(scr_config, lv_color_hex(0x202020), 0); // Unified dark grey for entire screen area
 
   scr_stats = lv_obj_create(NULL);
   lv_obj_set_style_pad_all(scr_stats, 0, 0);
-  lv_obj_set_style_bg_color(scr_stats, lv_color_hex(0x969696), 0);
+  lv_obj_set_style_bg_color(scr_stats, lv_color_hex(0x202020), 0);
+
+  scr_devices = lv_obj_create(NULL);
+  lv_obj_set_style_pad_all(scr_devices, 0, 0);
+  lv_obj_set_style_bg_color(scr_devices, lv_color_hex(0x202020), 0);
 
   // Initialize UI components on Image Screen
   label_status = lv_label_create(top_panel);
@@ -270,6 +291,7 @@ void setup() {
 
   buildConfigScreen();
   buildStatsScreen();
+  buildDevicesScreen();
 
   // Create Top Layer Navigation Buttons
   nav_btn_left = lv_btn_create(lv_layer_top());
@@ -280,7 +302,11 @@ void setup() {
   lv_obj_set_style_border_width(nav_btn_left, 1, 0);
   lv_obj_set_style_border_color(nav_btn_left, lv_color_white(), 0);
   lv_obj_set_style_radius(nav_btn_left, 5, 0); // Rounded corners to match manual drawing
-  lv_obj_add_event_cb(nav_btn_left, [](lv_event_t *e) { switchScreen(current_screen == 0 ? 2 : 0); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(nav_btn_left, [](lv_event_t *e) { 
+    if (current_screen == 0) switchScreen(3);
+    else if (current_screen == 3) switchScreen(2);
+    else switchScreen(0);
+  }, LV_EVENT_CLICKED, NULL);
   lv_obj_t * lbl_l = lv_label_create(nav_btn_left);
   lv_label_set_text(lbl_l, "<");
   lv_obj_set_style_text_color(lbl_l, lv_color_white(), 0);
@@ -294,7 +320,11 @@ void setup() {
   lv_obj_set_style_border_width(nav_btn_right, 1, 0);
   lv_obj_set_style_border_color(nav_btn_right, lv_color_white(), 0);
   lv_obj_set_style_radius(nav_btn_right, 5, 0); // Rounded corners to match manual drawing
-  lv_obj_add_event_cb(nav_btn_right, [](lv_event_t *e) { switchScreen(current_screen == 0 ? 2 : 0); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(nav_btn_right, [](lv_event_t *e) { 
+    if (current_screen == 0) switchScreen(2);
+    else if (current_screen == 2) switchScreen(3);
+    else switchScreen(0);
+  }, LV_EVENT_CLICKED, NULL);
   lv_obj_t * lbl_r = lv_label_create(nav_btn_right);
   lv_label_set_text(lbl_r, ">");
   lv_obj_set_style_text_color(lbl_r, lv_color_white(), 0);
@@ -339,8 +369,10 @@ void loop() {
   if (current_screen == 0) { // Image Screen manual touch handling
     if (is_touched && !was_touched) {
       if (y > 30) {
-        if ((x < 45 || x > screenWidth - 45) && y > 100 && y < 220) {
-          switchScreen(2); // Go to Stats (toggle between 0 and 2)
+        if (x < 45 && y > 100 && y < 220) {
+          switchScreen(3); // Go to Devices (left)
+        } else if (x > screenWidth - 45 && y > 100 && y < 220) {
+          switchScreen(2); // Go to Stats (right)
         } else if (x < 60 && y < 90) {
           switchScreen(1); // Go to Config
         } else {
@@ -398,6 +430,11 @@ void switchScreen(int scr_id) {
     lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
     freeImageBuffer();
     lv_scr_load(scr_stats);
+  } else if (scr_id == 3) {
+    lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
+    freeImageBuffer();
+    lv_scr_load(scr_devices);
   }
 }
 
@@ -487,7 +524,7 @@ void sendConfigChanges() {
 
 lv_obj_t * create_slider(lv_obj_t * parent, const char * name, int min, int max, lv_obj_t ** slider) {
     lv_obj_t * wrapper = lv_obj_create(parent);
-    lv_obj_set_size(wrapper, 210, 60);
+    lv_obj_set_size(wrapper, 440, 60);
     lv_obj_set_style_pad_all(wrapper, 5, 0);
     lv_obj_t * lbl = lv_label_create(wrapper);
     lv_label_set_text(lbl, name);
@@ -495,7 +532,7 @@ lv_obj_t * create_slider(lv_obj_t * parent, const char * name, int min, int max,
     lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 0, 0);
     *slider = lv_slider_create(wrapper);
     lv_slider_set_range(*slider, min, max);
-    lv_obj_set_size(*slider, 160, 10);
+    lv_obj_set_size(*slider, 380, 10);
     lv_obj_align(*slider, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_t * val_lbl = lv_label_create(wrapper);
     lv_label_set_text(val_lbl, "0");
@@ -510,7 +547,7 @@ lv_obj_t * create_slider(lv_obj_t * parent, const char * name, int min, int max,
 
 lv_obj_t * create_switch(lv_obj_t * parent, const char * name, lv_obj_t ** sw) {
     lv_obj_t * wrapper = lv_obj_create(parent);
-    lv_obj_set_size(wrapper, 210, 45);
+    lv_obj_set_size(wrapper, 440, 45);
     lv_obj_set_style_pad_all(wrapper, 5, 0);
     lv_obj_t * lbl = lv_label_create(wrapper);
     lv_label_set_text(lbl, name);
@@ -546,7 +583,7 @@ void buildStatsScreen() {
   lv_obj_set_style_pad_all(cont, 15, 0);
   lv_obj_set_style_border_width(cont, 0, 0);
   lv_obj_set_style_radius(cont, 0, 0);
-  lv_obj_set_style_bg_color(cont, lv_color_hex(0x969696), 0);
+  lv_obj_set_style_bg_color(cont, lv_color_hex(0x202020), 0);
   lv_obj_set_style_text_color(cont, lv_color_white(), 0);
 
   // Stats content
@@ -581,6 +618,91 @@ void buildStatsScreen() {
   lv_chart_set_next_value(chart, ser, 12);
 }
 
+void buildDevicesScreen() {
+  // Top Section
+  lv_obj_t * top_panel_dev = lv_obj_create(scr_devices);
+  lv_obj_set_size(top_panel_dev, screenWidth, 30);
+  lv_obj_align(top_panel_dev, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_pad_all(top_panel_dev, 0, 0);
+  lv_obj_set_style_border_width(top_panel_dev, 0, 0);
+  lv_obj_set_style_radius(top_panel_dev, 0, 0);
+  lv_obj_set_style_bg_color(top_panel_dev, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+
+  lv_obj_t * title = lv_label_create(top_panel_dev);
+  lv_label_set_text(title, "List Devices");
+  lv_obj_set_style_text_color(title, lv_color_white(), 0);
+  lv_obj_align(title, LV_ALIGN_LEFT_MID, 10, 0);
+
+  // Body container (Centered, 400px)
+  lv_obj_t * cont = lv_obj_create(scr_devices);
+  lv_obj_set_size(cont, 400, screenHeight - 30);
+  lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_all(cont, 10, 0);
+  lv_obj_set_style_pad_row(cont, 5, 0);
+  lv_obj_set_style_border_width(cont, 0, 0);
+  lv_obj_set_style_radius(cont, 0, 0);
+  lv_obj_set_style_bg_color(cont, lv_color_hex(0x202020), 0);
+
+  // Table Header Row
+  lv_obj_t * row_hdr = lv_obj_create(cont);
+  lv_obj_set_size(row_hdr, 380, 30);
+  lv_obj_set_style_bg_color(row_hdr, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+  lv_obj_set_style_border_width(row_hdr, 0, 0);
+  lv_obj_set_style_radius(row_hdr, 3, 0);
+  lv_obj_set_style_pad_all(row_hdr, 0, 0);
+  lv_obj_set_flex_flow(row_hdr, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(row_hdr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  auto add_col = [](lv_obj_t* parent, const char* txt, int w) {
+    lv_obj_t * lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, txt);
+    lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(lbl, w);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+  };
+
+  add_col(row_hdr, "No.", 30);
+  add_col(row_hdr, "MAC", 150);
+  add_col(row_hdr, "IP", 120);
+  add_col(row_hdr, "TEST", 60);
+
+  // Dummy Data Rows
+  auto add_row = [&](int no, const char* mac, const char* ip) {
+    lv_obj_t * row = lv_obj_create(cont);
+    lv_obj_set_size(row, 380, 40);
+    lv_obj_set_style_bg_color(row, lv_color_hex(0x303030), 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, 3, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    char buf[8];
+    sprintf(buf, "%d", no);
+    add_col(row, buf, 30);
+    add_col(row, mac, 150);
+    add_col(row, ip, 120);
+
+    lv_obj_t * btn = lv_btn_create(row);
+    lv_obj_set_size(btn, 50, 25);
+    lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_BLUE), 0);
+    lv_obj_t * lbl_btn = lv_label_create(btn);
+    lv_label_set_text(lbl_btn, "PING");
+    lv_obj_set_style_text_font(lbl_btn, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl_btn);
+  };
+
+  int row_count = 1;
+  for (int i = 0; i < 5; i++) {
+    if (devices[i].mac != "" && devices[i].ip != "") {
+      add_row(row_count++, devices[i].mac.c_str(), devices[i].ip.c_str());
+    }
+  }
+}
+
 void buildConfigScreen() {
   // Top Section (Information)
   lv_obj_t * top_panel_cfg = lv_obj_create(scr_config);
@@ -610,19 +732,19 @@ void buildConfigScreen() {
 
   // Body container (Scrollable)
   lv_obj_t * cont = lv_obj_create(scr_config);
-  lv_obj_set_size(cont, 400, screenHeight - 30); // Narrower width to leave margins for side buttons
+  lv_obj_set_size(cont, screenWidth, screenHeight - 30); // Full width now that side buttons are gone
   lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_ROW_WRAP);
   lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START); // Center items horizontally
   lv_obj_set_style_pad_all(cont, 10, 0);
   lv_obj_set_style_border_width(cont, 0, 0);
   lv_obj_set_style_radius(cont, 0, 0);
-  lv_obj_set_style_bg_color(cont, lv_color_hex(0x969696), 0); // Dark grey background
+  lv_obj_set_style_bg_color(cont, lv_color_hex(0x202020), 0); // Dark grey background
   lv_obj_set_style_text_color(cont, lv_color_white(), 0);
 
   // Apply button inside the container at the top
   lv_obj_t * btn_apply = lv_btn_create(cont);
-  lv_obj_set_size(btn_apply, 360, 40); // Adjusted to fit 400px container width (minus padding)
+  lv_obj_set_size(btn_apply, 440, 40); // Expanded to fit screenWidth (minus padding)
   lv_obj_t * lbl_apply = lv_label_create(btn_apply);
   lv_label_set_text(lbl_apply, "Apply Settings");
   lv_obj_center(lbl_apply);
@@ -657,6 +779,12 @@ void connectToWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("\nWiFi connected!\nIP Address: %s\n", WiFi.localIP().toString().c_str());
     lv_label_set_text_fmt(label_status, "IP: %s", WiFi.localIP().toString().c_str());
+
+    // Initialize mDNS
+    if (MDNS.begin("gateway")) {
+      Serial.println("mDNS responder started: http://gateway.local");
+      MDNS.addService("http", "tcp", 80);
+    }
   } else {
     lv_label_set_text(label_status, "WiFi Failed!");
   }
