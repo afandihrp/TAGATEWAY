@@ -347,10 +347,58 @@ void handleImage() {
   }
 }
 
+bool getJpgSize(const uint8_t* data, size_t len, uint16_t *w, uint16_t *h) {
+  size_t i = 0;
+  if (data[0] != 0xFF || data[1] != 0xD8) return false;
+  i = 2;
+  while (i < len - 8) {
+    if (data[i] == 0xFF) {
+      uint8_t marker = data[i+1];
+      if (marker == 0xC0 || marker == 0xC1 || marker == 0xC2) { // SOF markers
+        *h = (data[i+5] << 8) | data[i+6];
+        *w = (data[i+7] << 8) | data[i+8];
+        return true;
+      }
+      i += 2 + ((data[i+2] << 8) | data[i+3]);
+    } else {
+      i++;
+    }
+  }
+  return false;
+}
+
 void displayImageOrText() {
   if (imageBuffer && imageBufferSize > 0) {
-    tft.drawJpg(imageBuffer, imageBufferSize, 0, 30, screenWidth, screenHeight - 30);
-    lv_label_set_text_fmt(label_status, "Captured: %d Bytes", imageBufferSize);
+    uint16_t img_w = 0, img_h = 0;
+    float scale = 1.0f;
+    
+    // Parse JPEG header to find width and height
+    if (getJpgSize(imageBuffer, imageBufferSize, &img_w, &img_h)) {
+      // Calculate uniform scale to fit the screen
+      float target_w = screenWidth;
+      float target_h = screenHeight - 30; // 30 pixels reserved for top labels
+      float ratio_w = target_w / img_w;
+      float ratio_h = target_h / img_h;
+      scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
+    }
+
+    // Clear the image area with black before drawing the new image
+    tft.fillRect(0, 30, screenWidth, screenHeight - 30, TFT_BLACK);
+    
+    // Center the image horizontally and vertically
+    int32_t x_offset = (screenWidth - (img_w * scale)) / 2;
+    int32_t y_offset = 30 + ((screenHeight - 30) - (img_h * scale)) / 2;
+    if (x_offset < 0) x_offset = 0;
+    if (y_offset < 30) y_offset = 30;
+
+    // Draw scaled JPEG
+    tft.drawJpg(imageBuffer, imageBufferSize, x_offset, y_offset, 0, 0, 0, 0, scale, scale);
+    
+    if (img_w > 0) {
+      lv_label_set_text_fmt(label_status, "Captured: %dx%d (%.1fx)", img_w, img_h, scale);
+    } else {
+      lv_label_set_text_fmt(label_status, "Captured: %d Bytes", imageBufferSize);
+    }
   } else {
     lv_label_set_text(label_status, "Capture Failed!");
   }
