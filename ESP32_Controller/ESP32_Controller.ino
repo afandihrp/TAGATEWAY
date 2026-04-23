@@ -22,6 +22,7 @@ static const uint32_t screenHeight = 320;
 class LGFX : public lgfx::LGFX_Device {
   lgfx::Panel_ILI9488 _panel_instance;
   lgfx::Bus_SPI       _bus_instance;
+  lgfx::Touch_XPT2046 _touch_instance;
 
 public:
   LGFX(void) {
@@ -48,6 +49,17 @@ public:
     pcfg.bus_shared   = true;
     _panel_instance.config(pcfg);
 
+    auto tcfg = _touch_instance.config();
+    tcfg.x_min      = 300;
+    tcfg.x_max      = 3800;
+    tcfg.y_min      = 300;
+    tcfg.y_max      = 3800;
+    tcfg.pin_cs     = 21;
+    tcfg.bus_shared = true;
+    tcfg.spi_host   = VSPI_HOST;
+    _touch_instance.config(tcfg);
+    _panel_instance.setTouch(&_touch_instance);
+
     setPanel(&_panel_instance);
   }
 };
@@ -61,6 +73,10 @@ static lv_color_t *buf = nullptr;
 // LVGL Widgets
 lv_obj_t * label_status;
 lv_obj_t * label_ram;
+lv_obj_t * label_notify;
+
+// Global flags
+bool capture_requested = false;
 
 HTTPClient http;
 WebServer server(80);
@@ -157,6 +173,11 @@ void setup() {
   lv_obj_set_style_text_color(label_ram, lv_color_white(), 0);
   lv_obj_align(label_ram, LV_ALIGN_TOP_RIGHT, -10, 5);
 
+  label_notify = lv_label_create(scr);
+  lv_label_set_text(label_notify, "Tap to capture");
+  lv_obj_set_style_text_color(label_notify, lv_color_white(), 0);
+  lv_obj_align(label_notify, LV_ALIGN_TOP_MID, 0, 5);
+
   // Connect to WiFi
   connectToWiFi();
   
@@ -180,6 +201,23 @@ void loop() {
   server.handleClient();
   lv_timer_handler();
   updateRAMUsage();
+
+  // Polling touch directly to avoid LVGL redraw over JPEG
+  uint16_t x, y;
+  static bool was_touched = false;
+  bool is_touched = tft.getTouch(&x, &y);
+  if (is_touched && !was_touched) {
+    capture_requested = true;
+    lv_label_set_text(label_notify, "Capturing...");
+    lv_timer_handler(); // Redraw status label immediately
+  }
+  was_touched = is_touched;
+
+  if (capture_requested) {
+    capture_requested = false;
+    handleCapture();
+  }
+  
   delay(5);
 }
 
@@ -292,14 +330,13 @@ void captureImage() {
   
   String url = String(cameraServerUrl) + "/capture";
   http.begin(url);
-  http.setTimeout(8000);
+  http.setTimeout(5000); // 5 second connection timeout
   int httpCode = http.GET();
   
   if (httpCode == 200) {
     int contentLength = http.getSize();
     WiFiClient* stream = http.getStreamPtr();
     
-    // Allocate only if within limits
     if (contentLength > 0 && contentLength <= MAX_IMAGE_SIZE) {
       if (psramFound()) {
         imageBuffer = (uint8_t*)heap_caps_malloc(contentLength, MALLOC_CAP_SPIRAM);
@@ -310,6 +347,7 @@ void captureImage() {
       if (imageBuffer) {
         size_t bytesRead = 0;
         unsigned long start = millis();
+        // 5 second total download timeout
         while (http.connected() && bytesRead < contentLength && (millis() - start < 5000)) {
           if (stream->available()) {
             int len = stream->readBytes(imageBuffer + bytesRead, stream->available());
@@ -317,7 +355,13 @@ void captureImage() {
           }
           delay(1);
         }
-        imageBufferSize = bytesRead;
+        
+        if (bytesRead == (size_t)contentLength) {
+          imageBufferSize = bytesRead;
+        } else {
+          // Download incomplete or timeout
+          freeImageBuffer();
+        }
       }
     }
   }
@@ -328,8 +372,10 @@ void handleCapture() {
   captureImage();
   if (imageBuffer && imageBufferSize > 0) {
     displayImageOrText();
+    lv_label_set_text(label_notify, "Done");
     server.send(200, "application/json", "{\"status\": \"ok\", \"size\": " + String(imageBufferSize) + "}");
   } else {
+    lv_label_set_text(label_notify, "Error");
     server.send(500, "application/json", "{\"error\": \"Capture fail\"}");
   }
 }
