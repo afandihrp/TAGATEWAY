@@ -82,7 +82,6 @@ lv_obj_t * label_notify;
 // Top Layer Nav Buttons & Config Notifications
 lv_obj_t * nav_btn_left;
 lv_obj_t * nav_btn_right;
-lv_obj_t * btn_cog;
 lv_obj_t * label_config_notify;
 
 // Config Sliders/Switches
@@ -301,21 +300,6 @@ void setup() {
   lv_obj_set_style_text_color(lbl_r, lv_color_white(), 0);
   lv_obj_center(lbl_r);
 
-  // Create Cogwheel button for Config access (only on Image View)
-  btn_cog = lv_btn_create(lv_layer_top());
-  lv_obj_set_size(btn_cog, 40, 40);
-  lv_obj_align(btn_cog, LV_ALIGN_TOP_LEFT, 5, 35); // Top-left of body area
-  lv_obj_set_style_bg_color(btn_cog, lv_color_black(), 0);
-  lv_obj_set_style_bg_opa(btn_cog, LV_OPA_50, 0);
-  lv_obj_set_style_border_width(btn_cog, 1, 0);
-  lv_obj_set_style_border_color(btn_cog, lv_color_white(), 0);
-  lv_obj_set_style_radius(btn_cog, 5, 0);
-  lv_obj_add_event_cb(btn_cog, [](lv_event_t *e) { switchScreen(1); }, LV_EVENT_CLICKED, NULL);
-  lv_obj_t * lbl_cog = lv_label_create(btn_cog);
-  lv_label_set_text(lbl_cog, LV_SYMBOL_SETTINGS);
-  lv_obj_set_style_text_color(lbl_cog, lv_color_white(), 0);
-  lv_obj_center(lbl_cog);
-
   switchScreen(0);
 
   // Connect to WiFi
@@ -358,7 +342,7 @@ void loop() {
         if ((x < 45 || x > screenWidth - 45) && y > 100 && y < 220) {
           switchScreen(2); // Go to Stats (toggle between 0 and 2)
         } else if (x < 60 && y < 90) {
-          // Cogwheel area: do nothing, LVGL handles the button click
+          switchScreen(1); // Go to Config
         } else {
           capture_requested = true;
           lv_label_set_text(label_notify, "Capturing...");
@@ -392,7 +376,6 @@ void switchScreen(int scr_id) {
   if (scr_id == 0) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(btn_cog, LV_OBJ_FLAG_HIDDEN); // Show cogwheel on Image View
     lv_scr_load(scr_image);
     
     // Force LVGL to render the full screen before we draw raw TFT items
@@ -407,14 +390,12 @@ void switchScreen(int scr_id) {
   } else if (scr_id == 1) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(btn_cog, LV_OBJ_FLAG_HIDDEN); // Hide cogwheel on Config
     freeImageBuffer(); // Clear current image from RAM when switching to config
     lv_scr_load(scr_config);
     fetchAndApplyConfig();
   } else if (scr_id == 2) {
     lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(btn_cog, LV_OBJ_FLAG_HIDDEN); // Hide cogwheel on Stats
     freeImageBuffer();
     lv_scr_load(scr_stats);
   }
@@ -883,21 +864,30 @@ void displayImageOrText() {
     lv_label_set_text(label_status, "Waiting...");
   }
 
-  // Force LVGL to redraw the top header and cogwheel on top of the image
+  // Force LVGL to redraw the top header on top of the image
   lv_obj_invalidate(top_panel); 
-  lv_obj_invalidate(btn_cog);
   lv_timer_handler();
 
   // Draw Glass-like buttons (outline) - ALWAYS on screen 0
   tft.drawRoundRect(5, 110, 30, 100, 5, TFT_WHITE);
   tft.drawRoundRect(screenWidth - 35, 110, 30, 100, 5, TFT_WHITE);
   
+  // Draw Settings Button
+  tft.drawRoundRect(5, 35, 40, 40, 5, TFT_WHITE);
+  
   tft.setTextSize(2);
   tft.setTextColor(TFT_WHITE);
+  
+  // Navigation Arrows
   tft.setCursor(12, 150);
   tft.print("<");
   tft.setCursor(screenWidth - 25, 150);
   tft.print(">");
+  
+  // Settings Text
+  tft.setTextSize(1);
+  tft.setCursor(12, 50);
+  tft.print("CFG");
 }
 
 const char* getHtmlUI() {
