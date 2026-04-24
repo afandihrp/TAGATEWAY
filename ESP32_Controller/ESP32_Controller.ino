@@ -91,9 +91,14 @@ lv_obj_t * top_panel;
 lv_obj_t * scr_config;
 lv_obj_t * scr_stats;
 lv_obj_t * scr_devices;
+lv_obj_t * scr_multi;
+lv_obj_t * top_panel_multi;
 lv_obj_t * label_status;
 lv_obj_t * label_ram;
 lv_obj_t * label_notify;
+lv_obj_t * label_ram_multi;
+lv_obj_t * label_notify_multi;
+lv_obj_t * dd_cameras;
 
 // Top Layer Nav Buttons & Config Notifications
 lv_obj_t * nav_btn_left;
@@ -148,9 +153,12 @@ void updateRAMUsage();
 void buildConfigScreen();
 void buildStatsScreen();
 void buildDevicesScreen();
+void buildMultiScreen();
 void fetchAndApplyConfig();
 void sendConfigChanges();
 void switchScreen(int scr_id);
+void captureMultiImage();
+void displayMultiImageOrText();
 
 // Simple JSON value extractor
 int getJsonVal(String json, String key) {
@@ -286,6 +294,10 @@ void setup() {
   lv_obj_set_style_pad_all(scr_devices, 0, 0);
   lv_obj_set_style_bg_color(scr_devices, lv_color_hex(0x202020), 0);
 
+  scr_multi = lv_obj_create(NULL);
+  lv_obj_set_style_pad_all(scr_multi, 0, 0);
+  lv_obj_set_style_bg_color(scr_multi, lv_color_hex(0x202020), 0);
+
   // Initialize UI components on Image Screen
   label_status = lv_label_create(top_panel);
   lv_label_set_text(label_status, "Ready...");
@@ -305,6 +317,7 @@ void setup() {
   buildConfigScreen();
   buildStatsScreen();
   buildDevicesScreen();
+  buildMultiScreen();
 
   // Create Top Layer Navigation Buttons
   nav_btn_left = lv_btn_create(lv_layer_top());
@@ -318,6 +331,7 @@ void setup() {
   lv_obj_add_event_cb(nav_btn_left, [](lv_event_t *e) { 
     if (current_screen == 0) switchScreen(3);
     else if (current_screen == 3) switchScreen(2);
+    else if (current_screen == 2) switchScreen(4);
     else switchScreen(0);
   }, LV_EVENT_CLICKED, NULL);
   lv_obj_t * lbl_l = lv_label_create(nav_btn_left);
@@ -334,7 +348,8 @@ void setup() {
   lv_obj_set_style_border_color(nav_btn_right, lv_color_white(), 0);
   lv_obj_set_style_radius(nav_btn_right, 5, 0); // Rounded corners to match manual drawing
   lv_obj_add_event_cb(nav_btn_right, [](lv_event_t *e) { 
-    if (current_screen == 0) switchScreen(2);
+    if (current_screen == 0) switchScreen(4);
+    else if (current_screen == 4) switchScreen(2);
     else if (current_screen == 2) switchScreen(3);
     else switchScreen(0);
   }, LV_EVENT_CLICKED, NULL);
@@ -396,12 +411,38 @@ void loop() {
           lv_timer_handler();
         }
       }    }
+  } else if (current_screen == 4) { // Multi Camera manual touch handling
+    if (is_touched && !was_touched) {
+      if (y > 30) {
+        if (x < 45 && y > 100 && y < 220) {
+          switchScreen(0); // Left to Image
+        } else if (x > screenWidth - 45 && y > 100 && y < 220) {
+          switchScreen(2); // Right to Stats
+        } else if (x < 60 && y < 90) {
+          switchScreen(1); // CFG
+        } else {
+          lv_label_set_text(label_notify_multi, "Capturing...");
+          lv_timer_handler();
+          captureMultiImage();
+          displayMultiImageOrText();
+          lv_label_set_text(label_notify_multi, "Done");
+          notify_done_time = millis();
+          if (notify_done_time == 0) notify_done_time = 1;
+        }
+      }
+    }
   }
   was_touched = is_touched;
 
   if (capture_requested) {
     capture_requested = false;
     handleCapture();
+  }
+  
+  if (notify_done_time > 0 && millis() - notify_done_time > 2000) {
+    if (current_screen == 4) lv_label_set_text(label_notify_multi, "Tap to capture");
+    else lv_label_set_text(label_notify, "Tap to capture");
+    notify_done_time = 0;
   }
   
   delay(5);
@@ -414,7 +455,11 @@ void updateRAMUsage() {
     uint32_t free_h = ESP.getFreeHeap();
     uint32_t total_h = ESP.getHeapSize();
     uint32_t used_h = total_h - free_h;
-    lv_label_set_text_fmt(label_ram, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+    if (current_screen == 4) {
+      lv_label_set_text_fmt(label_ram_multi, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+    } else {
+      lv_label_set_text_fmt(label_ram, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+    }
   }
 }
 
@@ -452,6 +497,30 @@ void switchScreen(int scr_id) {
     lv_obj_clean(scr_devices); // Clear old table
     buildDevicesScreen();     // Re-render with new data
     lv_scr_load(scr_devices);
+  } else if (scr_id == 4) {
+    lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
+    freeImageBuffer();
+    
+    // Populate Dropdown
+    lv_dropdown_clear_options(dd_cameras);
+    bool has_dev = false;
+    for (int i = 0; i < 5; i++) {
+      if (devices[i].ip != "") {
+        lv_dropdown_add_option(dd_cameras, devices[i].ip.c_str(), LV_DROPDOWN_POS_LAST);
+        has_dev = true;
+      }
+    }
+    if (!has_dev) lv_dropdown_add_option(dd_cameras, "No Devices", LV_DROPDOWN_POS_LAST);
+    
+    lv_scr_load(scr_multi);
+    
+    uint32_t t = millis();
+    while (millis() - t < 50) {
+      lv_timer_handler();
+      delay(5);
+    }
+    displayMultiImageOrText();
   }
 }
 
@@ -718,6 +787,43 @@ void buildDevicesScreen() {
       add_row(row_count++, devices[i].mac.c_str(), devices[i].ip.c_str());
     }
   }
+}
+
+void buildMultiScreen() {
+  // Top Section
+  top_panel_multi = lv_obj_create(scr_multi);
+  lv_obj_set_size(top_panel_multi, screenWidth, 30);
+  lv_obj_align(top_panel_multi, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_pad_all(top_panel_multi, 0, 0);
+  lv_obj_set_style_border_width(top_panel_multi, 0, 0);
+  lv_obj_set_style_radius(top_panel_multi, 0, 0);
+  lv_obj_set_style_bg_color(top_panel_multi, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+
+  // Dropdown for IP selection
+  dd_cameras = lv_dropdown_create(top_panel_multi);
+  lv_obj_set_size(dd_cameras, 150, 28);
+  lv_obj_align(dd_cameras, LV_ALIGN_LEFT_MID, 45, 0);
+  lv_obj_set_style_text_font(dd_cameras, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_pad_all(dd_cameras, 2, 0);
+
+  label_ram_multi = lv_label_create(top_panel_multi);
+  lv_label_set_text(label_ram_multi, "RAM: --");
+  lv_obj_set_style_text_color(label_ram_multi, lv_color_white(), 0);
+  lv_obj_align(label_ram_multi, LV_ALIGN_RIGHT_MID, -10, 0);
+
+  label_notify_multi = lv_label_create(top_panel_multi);
+  lv_label_set_text(label_notify_multi, "Tap to capture");
+  lv_obj_set_style_text_color(label_notify_multi, lv_color_white(), 0);
+  lv_obj_align(label_notify_multi, LV_ALIGN_CENTER, 40, 0); // Shift right to avoid dropdown
+
+  // Body container (Image View)
+  lv_obj_t * body_panel_multi = lv_obj_create(scr_multi);
+  lv_obj_set_size(body_panel_multi, screenWidth, screenHeight - 30);
+  lv_obj_align(body_panel_multi, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_pad_all(body_panel_multi, 0, 0);
+  lv_obj_set_style_border_width(body_panel_multi, 0, 0);
+  lv_obj_set_style_radius(body_panel_multi, 0, 0);
+  lv_obj_set_style_bg_color(body_panel_multi, lv_color_hex(0x202020), 0);
 }
 
 void buildConfigScreen() {
@@ -1099,6 +1205,72 @@ void displayImageOrText() {
   tft.setTextSize(1);
   tft.setCursor(12, 50);
   tft.print("CFG");
+}
+
+void captureMultiImage() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  char ip_buf[32];
+  lv_dropdown_get_selected_str(dd_cameras, ip_buf, sizeof(ip_buf));
+  if (String(ip_buf) == "No Devices") return;
+
+  freeImageBuffer();
+  String url = "http://" + String(ip_buf) + "/capture";
+  
+  http.begin(url);
+  http.setTimeout(5000);
+  int httpCode = http.GET();
+  if (httpCode == 200) {
+    int contentLength = http.getSize();
+    WiFiClient* stream = http.getStreamPtr();
+    if (contentLength > 0 && contentLength <= MAX_IMAGE_SIZE) {
+      if (psramFound()) imageBuffer = (uint8_t*)heap_caps_malloc(contentLength, MALLOC_CAP_SPIRAM);
+      else imageBuffer = (uint8_t*)malloc(contentLength);
+      if (imageBuffer) {
+        size_t bytesRead = 0;
+        unsigned long start = millis();
+        while (http.connected() && bytesRead < contentLength && (millis() - start < 5000)) {
+          if (stream->available()) {
+            int len = stream->readBytes(imageBuffer + bytesRead, stream->available());
+            bytesRead += len;
+          }
+          delay(1);
+        }
+        if (bytesRead == (size_t)contentLength) imageBufferSize = bytesRead;
+        else freeImageBuffer();
+      }
+    }
+  }
+  http.end();
+}
+
+void displayMultiImageOrText() {
+  if (current_screen != 4) return;
+  tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
+  if (imageBuffer && imageBufferSize > 0) {
+    uint16_t img_w = 0, img_h = 0;
+    float scale = 1.0f;
+    if (getJpgSize(imageBuffer, imageBufferSize, &img_w, &img_h)) {
+      float ratio_w = (float)screenWidth / img_w;
+      float ratio_h = (float)(screenHeight - 30) / img_h;
+      scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
+    }
+    int32_t x_off = (screenWidth - (img_w * scale)) / 2;
+    int32_t y_off = 30 + ((screenHeight - 30) - (img_h * scale)) / 2;
+    tft.drawJpg(imageBuffer, imageBufferSize, x_off, y_off, 0, 0, 0, 0, scale, scale);
+  }
+  lv_obj_invalidate(top_panel_multi);
+  lv_timer_handler();
+
+  tft.drawRoundRect(5, 110, 30, 100, 5, TFT_WHITE);
+  tft.drawRoundRect(screenWidth - 35, 110, 30, 100, 5, TFT_WHITE);
+  tft.drawRoundRect(5, 35, 40, 40, 5, TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(12, 150); tft.print("<");
+  tft.setCursor(screenWidth - 25, 150); tft.print(">");
+  tft.setTextSize(1);
+  tft.setCursor(12, 50); tft.print("CFG");
 }
 
 const char* getHtmlUI() {
