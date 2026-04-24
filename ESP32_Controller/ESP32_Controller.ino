@@ -98,6 +98,8 @@ lv_obj_t * label_ram;
 lv_obj_t * label_notify;
 lv_obj_t * label_ram_multi;
 lv_obj_t * label_notify_multi;
+lv_obj_t * label_ram_stats;
+lv_obj_t * label_ram_devices;
 lv_obj_t * dd_cameras;
 
 // Top Layer Nav Buttons & Config Notifications
@@ -460,6 +462,10 @@ void updateRAMUsage() {
     uint32_t used_h = total_h - free_h;
     if (current_screen == 4) {
       lv_label_set_text_fmt(label_ram_multi, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+    } else if (current_screen == 2) {
+      lv_label_set_text_fmt(label_ram_stats, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+    } else if (current_screen == 3) {
+      lv_label_set_text_fmt(label_ram_devices, "RAM: %u/%u KB", used_h/1024, total_h/1024);
     } else {
       lv_label_set_text_fmt(label_ram, "RAM: %u/%u KB", used_h/1024, total_h/1024);
     }
@@ -663,6 +669,11 @@ void buildStatsScreen() {
   lv_obj_set_style_text_color(title, lv_color_white(), 0);
   lv_obj_align(title, LV_ALIGN_LEFT_MID, 10, 0);
 
+  label_ram_stats = lv_label_create(top_panel_stats);
+  lv_label_set_text(label_ram_stats, "RAM: --");
+  lv_obj_set_style_text_color(label_ram_stats, lv_color_white(), 0);
+  lv_obj_align(label_ram_stats, LV_ALIGN_RIGHT_MID, -10, 0);
+
   // Body container (Centered, 400px)
   lv_obj_t * cont = lv_obj_create(scr_stats);
   lv_obj_set_size(cont, 400, screenHeight - 30);
@@ -721,6 +732,11 @@ void buildDevicesScreen() {
   lv_label_set_text(title, "List Devices");
   lv_obj_set_style_text_color(title, lv_color_white(), 0);
   lv_obj_align(title, LV_ALIGN_LEFT_MID, 10, 0);
+
+  label_ram_devices = lv_label_create(top_panel_dev);
+  lv_label_set_text(label_ram_devices, "RAM: --");
+  lv_obj_set_style_text_color(label_ram_devices, lv_color_white(), 0);
+  lv_obj_align(label_ram_devices, LV_ALIGN_RIGHT_MID, -10, 0);
 
   // Body container (Centered, 400px)
   lv_obj_t * cont = lv_obj_create(scr_devices);
