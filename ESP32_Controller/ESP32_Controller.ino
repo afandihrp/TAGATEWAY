@@ -78,11 +78,11 @@ struct DeviceInfo {
 };
 
 DeviceInfo devices[5] = {
-  {"BC:DD:C2:E1:92:44", "192.168.1.50"},
-  {"40:22:D8:F5:21:09", "192.168.1.51"},
-  {"A2:77:C1:22:BB:EF", "192.168.1.52"},
   {"", ""},
-  {"" ,""}
+  {"", ""},
+  {"", ""},
+  {"", ""},
+  {"", ""}
 };
 
 // LVGL Widgets
@@ -139,6 +139,7 @@ void handleCapture();
 void handleImage();
 void handleStatus();
 void handleDevices();
+void handleRegister();
 const char* getHtmlUI();
 void freeImageBuffer();
 void captureImage();
@@ -164,6 +165,17 @@ int getJsonVal(String json, String key) {
   else if (endIdx2 != -1) endIdx = endIdx2;
   if (endIdx == -1) return -999;
   return json.substring(idx, endIdx).toInt();
+}
+
+String getJsonStr(String json, String key) {
+  int idx = json.indexOf("\"" + key + "\":");
+  if (idx == -1) return "";
+  idx += key.length() + 3;
+  int startQuote = json.indexOf("\"", idx);
+  if (startQuote == -1) return "";
+  int endQuote = json.indexOf("\"", startQuote + 1);
+  if (endQuote == -1) return "";
+  return json.substring(startQuote + 1, endQuote);
 }
 
 // LVGL Touch Read Callback
@@ -344,6 +356,7 @@ void setup() {
   server.on("/image", handleImage);
   server.on("/status", handleStatus);
   server.on("/devices", handleDevices);
+  server.on("/register", HTTP_POST, handleRegister);
   
   server.onNotFound([]() {
     server.send(404, "text/plain", "Not Found");
@@ -436,6 +449,8 @@ void switchScreen(int scr_id) {
     lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
     freeImageBuffer();
+    lv_obj_clean(scr_devices); // Clear old table
+    buildDevicesScreen();     // Re-render with new data
     lv_scr_load(scr_devices);
   }
 }
@@ -446,7 +461,7 @@ void fetchAndApplyConfig() {
   lv_timer_handler();
 
   http.begin(String(cameraServerUrl) + "/status");
-  http.setTimeout(3000);
+  http.setTimeout(5000);
   int code = http.GET();
   if (code == 200) {
     String json = http.getString();
@@ -804,6 +819,7 @@ void controlCamera(const char* var, int val) {
   if (WiFi.status() != WL_CONNECTED) return;
   String url = String(cameraServerUrl) + "/control?var=" + String(var) + "&val=" + String(val);
   http.begin(url);
+  http.setTimeout(5000);
   http.GET();
   http.end();
 }
@@ -812,6 +828,7 @@ void setXCLK(int xclk) {
   if (WiFi.status() != WL_CONNECTED) return;
   String url = String(cameraServerUrl) + "/xclk?xclk=" + String(xclk);
   http.begin(url);
+  http.setTimeout(5000);
   http.GET();
   http.end();
 }
@@ -823,6 +840,7 @@ void handleStatus() {
   }
   String url = String(cameraServerUrl) + "/status";
   http.begin(url);
+  http.setTimeout(5000);
   int httpCode = http.GET();
   if (httpCode == 200) {
     server.send(200, "application/json", http.getString());
@@ -844,6 +862,55 @@ void handleDevices() {
   }
   json += "]";
   server.send(200, "application/json", json);
+}
+
+void handleRegister() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed");
+    return;
+  }
+  String body = server.arg("plain");
+  if (body == "") {
+    server.send(400, "application/json", "{\"error\": \"Empty body\"}");
+    return;
+  }
+  String mac = getJsonStr(body, "mac");
+  if (mac == "") {
+    server.send(400, "application/json", "{\"error\": \"Missing mac\"}");
+    return;
+  }
+  
+  String clientIP = server.client().remoteIP().toString();
+  bool found = false;
+  
+  for (int i = 0; i < 5; i++) {
+    if (devices[i].mac == mac) {
+      found = true;
+      if (devices[i].ip != clientIP) {
+        devices[i].ip = clientIP;
+      }
+      break;
+    }
+  }
+  
+  if (!found) {
+    // Find empty slot
+    bool added = false;
+    for (int i = 0; i < 5; i++) {
+      if (devices[i].mac == "") {
+        devices[i].mac = mac;
+        devices[i].ip = clientIP;
+        added = true;
+        break;
+      }
+    }
+    if (!added) {
+      server.send(507, "application/json", "{\"error\": \"Device limit reached\"}");
+      return;
+    }
+  }
+  
+  server.send(200, "application/json", "{\"status\": \"ok\"}");
 }
 
 void handleRoot() {
