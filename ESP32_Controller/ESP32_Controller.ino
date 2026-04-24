@@ -120,6 +120,7 @@ lv_obj_t * sw_vflip;
 // Global flags
 int current_screen = 0; // 0: Image, 1: Config
 bool capture_requested = false;
+bool capture_requested_multi = false;
 uint32_t notify_done_time = 0;
 
 HTTPClient http;
@@ -158,6 +159,7 @@ void fetchAndApplyConfig();
 void sendConfigChanges();
 void switchScreen(int scr_id);
 void captureMultiImage();
+void handleCaptureMulti();
 void displayMultiImageOrText();
 
 // Simple JSON value extractor
@@ -402,7 +404,7 @@ void loop() {
         if (x < 45 && y > 100 && y < 220) {
           switchScreen(3); // Go to Devices (left)
         } else if (x > screenWidth - 45 && y > 100 && y < 220) {
-          switchScreen(2); // Go to Stats (right)
+          switchScreen(4); // Go to Multi Camera (right)
         } else if (x < 60 && y < 90) {
           switchScreen(1); // Go to Config
         } else {
@@ -421,13 +423,9 @@ void loop() {
         } else if (x < 60 && y < 90) {
           switchScreen(1); // CFG
         } else {
+          capture_requested_multi = true;
           lv_label_set_text(label_notify_multi, "Capturing...");
           lv_timer_handler();
-          captureMultiImage();
-          displayMultiImageOrText();
-          lv_label_set_text(label_notify_multi, "Done");
-          notify_done_time = millis();
-          if (notify_done_time == 0) notify_done_time = 1;
         }
       }
     }
@@ -437,6 +435,11 @@ void loop() {
   if (capture_requested) {
     capture_requested = false;
     handleCapture();
+  }
+
+  if (capture_requested_multi) {
+    capture_requested_multi = false;
+    handleCaptureMulti();
   }
   
   if (notify_done_time > 0 && millis() - notify_done_time > 2000) {
@@ -1108,6 +1111,18 @@ void handleCapture() {
     if(notify_done_time == 0) notify_done_time = 1;
     server.send(500, "application/json", "{\"error\": \"Capture fail\"}");
   }
+}
+
+void handleCaptureMulti() {
+  captureMultiImage();
+  if (imageBuffer && imageBufferSize > 0) {
+    displayMultiImageOrText();
+    lv_label_set_text(label_notify_multi, "Done");
+  } else {
+    lv_label_set_text(label_notify_multi, "Error");
+  }
+  notify_done_time = millis();
+  if (notify_done_time == 0) notify_done_time = 1;
 }
 
 void handleImage() {
