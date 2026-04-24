@@ -422,14 +422,7 @@ void loop() {
           switchScreen(0); // Left to Image
         } else if (x > screenWidth - 45 && y > 100 && y < 220) {
           switchScreen(2); // Right to Stats
-        } else if (x < 60 && y < 90) {
-          char ip_buf[32];
-          lv_dropdown_get_selected_str(dd_cameras, ip_buf, sizeof(ip_buf));
-          configTargetIP = String(ip_buf);
-          if (configTargetIP != "No Devices") {
-            switchScreen(1); // Go to Config
-          }
-        } else {
+        } else if (x > 60 && x < screenWidth - 60) {
           capture_requested_multi = true;
           lv_label_set_text(label_notify_multi, "Capturing...");
           lv_timer_handler();
@@ -823,6 +816,27 @@ void buildMultiScreen() {
   lv_obj_set_style_border_width(top_panel_multi, 0, 0);
   lv_obj_set_style_radius(top_panel_multi, 0, 0);
   lv_obj_set_style_bg_color(top_panel_multi, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+
+  // CFG Button with Cogwheel
+  lv_obj_t * btn_cfg = lv_btn_create(top_panel_multi);
+  lv_obj_set_size(btn_cfg, 35, 28);
+  lv_obj_align(btn_cfg, LV_ALIGN_LEFT_MID, 5, 0);
+  lv_obj_set_style_bg_opa(btn_cfg, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(btn_cfg, 1, 0);
+  lv_obj_set_style_border_color(btn_cfg, lv_color_white(), 0);
+  lv_obj_set_style_shadow_width(btn_cfg, 0, 0);
+  lv_obj_add_event_cb(btn_cfg, [](lv_event_t *e) {
+    char ip_buf[32];
+    lv_dropdown_get_selected_str(dd_cameras, ip_buf, sizeof(ip_buf));
+    configTargetIP = String(ip_buf);
+    if (configTargetIP != "No Devices") {
+      switchScreen(1);
+    }
+  }, LV_EVENT_CLICKED, NULL);
+  
+  lv_obj_t * lbl_cfg = lv_label_create(btn_cfg);
+  lv_label_set_text(lbl_cfg, LV_SYMBOL_SETTINGS);
+  lv_obj_center(lbl_cfg);
 
   // Dropdown for IP selection
   dd_cameras = lv_dropdown_create(top_panel_multi);
@@ -1298,13 +1312,10 @@ void displayMultiImageOrText() {
 
   tft.drawRoundRect(5, 110, 30, 100, 5, TFT_WHITE);
   tft.drawRoundRect(screenWidth - 35, 110, 30, 100, 5, TFT_WHITE);
-  tft.drawRoundRect(5, 35, 40, 40, 5, TFT_WHITE);
   tft.setTextSize(2);
   tft.setTextColor(TFT_WHITE);
   tft.setCursor(12, 150); tft.print("<");
   tft.setCursor(screenWidth - 25, 150); tft.print(">");
-  tft.setTextSize(1);
-  tft.setCursor(12, 50); tft.print("CFG");
 }
 
 const char* getHtmlUI() {
