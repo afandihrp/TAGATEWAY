@@ -106,6 +106,7 @@ lv_obj_t * dd_cameras;
 lv_obj_t * nav_btn_left;
 lv_obj_t * nav_btn_right;
 lv_obj_t * label_config_notify;
+lv_obj_t * label_config_ip;
 
 // Config Sliders/Switches
 lv_obj_t * sld_quality;
@@ -121,6 +122,7 @@ lv_obj_t * sw_vflip;
 
 // Global flags
 int current_screen = 0; // 0: Image, 1: Config
+String configTargetIP = "192.168.11.249";
 bool capture_requested = false;
 bool capture_requested_multi = false;
 uint32_t notify_done_time = 0;
@@ -407,8 +409,6 @@ void loop() {
           switchScreen(3); // Go to Devices (left)
         } else if (x > screenWidth - 45 && y > 100 && y < 220) {
           switchScreen(4); // Go to Multi Camera (right)
-        } else if (x < 60 && y < 90) {
-          switchScreen(1); // Go to Config
         } else {
           capture_requested = true;
           lv_label_set_text(label_notify, "Capturing...");
@@ -423,7 +423,12 @@ void loop() {
         } else if (x > screenWidth - 45 && y > 100 && y < 220) {
           switchScreen(2); // Right to Stats
         } else if (x < 60 && y < 90) {
-          switchScreen(1); // CFG
+          char ip_buf[32];
+          lv_dropdown_get_selected_str(dd_cameras, ip_buf, sizeof(ip_buf));
+          configTargetIP = String(ip_buf);
+          if (configTargetIP != "No Devices") {
+            switchScreen(1); // Go to Config
+          }
         } else {
           capture_requested_multi = true;
           lv_label_set_text(label_notify_multi, "Capturing...");
@@ -492,6 +497,7 @@ void switchScreen(int scr_id) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
     freeImageBuffer(); // Clear current image from RAM when switching to config
+    lv_label_set_text(label_config_ip, configTargetIP.c_str());
     lv_scr_load(scr_config);
     fetchAndApplyConfig();
   } else if (scr_id == 2) {
@@ -538,7 +544,7 @@ void fetchAndApplyConfig() {
   lv_label_set_text(label_config_notify, "Fetching status...");
   lv_timer_handler();
 
-  http.begin(String(cameraServerUrl) + "/status");
+  http.begin("http://" + configTargetIP + "/status");
   http.setTimeout(5000);
   int code = http.GET();
   if (code == 200) {
@@ -588,7 +594,7 @@ void sendConfigChanges() {
   int fail_count = 0;
   
   auto sendVal = [&](String key, int val) {
-    String url = String(cameraServerUrl) + "/control?var=" + key + "&val=" + String(val);
+    String url = "http://" + configTargetIP + "/control?var=" + key + "&val=" + String(val);
     http.begin(url);
     http.setTimeout(2000);
     int code = http.GET();
@@ -861,7 +867,7 @@ void buildConfigScreen() {
   lv_obj_align(btn_back_cfg, LV_ALIGN_LEFT_MID, 0, 0);
   lv_obj_set_style_bg_opa(btn_back_cfg, LV_OPA_TRANSP, 0);
   lv_obj_set_style_shadow_width(btn_back_cfg, 0, 0);
-  lv_obj_add_event_cb(btn_back_cfg, [](lv_event_t *e) { switchScreen(0); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(btn_back_cfg, [](lv_event_t *e) { switchScreen(4); }, LV_EVENT_CLICKED, NULL);
   lv_obj_t * lbl_back_cfg = lv_label_create(btn_back_cfg);
   lv_label_set_text(lbl_back_cfg, LV_SYMBOL_LEFT " Config");
   lv_obj_set_style_text_color(lbl_back_cfg, lv_color_white(), 0);
@@ -871,6 +877,11 @@ void buildConfigScreen() {
   lv_label_set_text(label_config_notify, "");
   lv_obj_set_style_text_color(label_config_notify, lv_color_white(), 0);
   lv_obj_align(label_config_notify, LV_ALIGN_CENTER, 0, 0);
+
+  label_config_ip = lv_label_create(top_panel_cfg);
+  lv_label_set_text(label_config_ip, "");
+  lv_obj_set_style_text_color(label_config_ip, lv_color_white(), 0);
+  lv_obj_align(label_config_ip, LV_ALIGN_RIGHT_MID, -10, 0);
 
   // Body container (Scrollable)
   lv_obj_t * cont = lv_obj_create(scr_config);
@@ -1220,9 +1231,6 @@ void displayImageOrText() {
   tft.drawRoundRect(5, 110, 30, 100, 5, TFT_WHITE);
   tft.drawRoundRect(screenWidth - 35, 110, 30, 100, 5, TFT_WHITE);
   
-  // Draw Settings Button
-  tft.drawRoundRect(5, 35, 40, 40, 5, TFT_WHITE);
-  
   tft.setTextSize(2);
   tft.setTextColor(TFT_WHITE);
   
@@ -1231,11 +1239,6 @@ void displayImageOrText() {
   tft.print("<");
   tft.setCursor(screenWidth - 25, 150);
   tft.print(">");
-  
-  // Settings Text
-  tft.setTextSize(1);
-  tft.setCursor(12, 50);
-  tft.print("CFG");
 }
 
 void captureMultiImage() {
