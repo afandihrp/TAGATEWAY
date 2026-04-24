@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <HTTPClient.h>
 
 // ===========================
 // Select camera model in board_config.h
@@ -13,8 +14,11 @@
 const char *ssid = "BatuKhan";
 const char *password = "momoygemoy";
 
+String macAddress;
+
 void startCameraServer();
 void setupLedFlash();
+void registerCamera();
 
 void setup() {
   Serial.begin(115200);
@@ -120,12 +124,34 @@ void setup() {
 
   startCameraServer();
 
+  macAddress = WiFi.macAddress();
+  registerCamera();
+
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(WiFi.localIP());
   Serial.println("' to connect");
 }
 
 void loop() {
-  // Do nothing. Everything is done in another task by the web server
-  delay(10000);
+  static unsigned long lastRegister = 0;
+  if (millis() - lastRegister >= 15000) {
+    lastRegister = millis();
+    registerCamera();
+  }
+}
+
+void registerCamera() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin("http://gateway.local/register");
+    http.addHeader("Content-Type", "application/json");
+    String payload = "{\"mac\":\"" + macAddress + "\"}";
+    int httpResponseCode = http.POST(payload);
+    if (httpResponseCode > 0) {
+      Serial.printf("[AUTO-REG] Code: %d\n", httpResponseCode);
+    } else {
+      Serial.printf("[AUTO-REG] Error: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+    http.end();
+  }
 }
