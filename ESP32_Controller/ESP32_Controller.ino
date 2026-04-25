@@ -12,9 +12,6 @@
 const char* ssid = "BatuKhan";
 const char* password = "momoygemoy";
 
-// Camera Server Address
-const char* cameraServerUrl = "http://192.168.11.249";
-
 // Display Configuration
 static const uint32_t screenWidth  = 480; // Landscape
 static const uint32_t screenHeight = 320;
@@ -51,11 +48,12 @@ public:
     _panel_instance.config(pcfg);
 
     auto tcfg = _touch_instance.config();
-tcfg.x_min = 300;
-tcfg.x_max = 3800;
-tcfg.y_min = 3800;   // swapped
-tcfg.y_max = 300;    // swapped
+    tcfg.x_min = 300;
+    tcfg.x_max = 3800;
+    tcfg.y_min = 3800;   // swapped
+    tcfg.y_max = 300;    // swapped
     tcfg.pin_cs     = 21;
+    tcfg.pin_int    = 27;
     tcfg.bus_shared = true;
     tcfg.spi_host   = VSPI_HOST;
     _touch_instance.config(tcfg);
@@ -122,7 +120,11 @@ lv_obj_t * sw_vflip;
 
 // Global flags
 int current_screen = 0; // 0: Image, 1: Config
-String configTargetIP = "192.168.11.249";
+String configTargetIP = "";
+String lastGlobalIP = "";
+int lastImgW = 0;
+int lastImgH = 0;
+bool toggleHeader = false;
 bool capture_requested = false;
 bool capture_requested_multi = false;
 uint32_t notify_done_time = 0;
@@ -152,7 +154,8 @@ void handleDevices();
 void handleRegister();
 const char* getHtmlUI();
 void freeImageBuffer();
-void captureImage();
+void captureImage(String targetIP);
+void runGlobalCapture();
 void displayImageOrText();
 void updateRAMUsage();
 void buildConfigScreen();
@@ -434,7 +437,7 @@ void loop() {
 
   if (capture_requested) {
     capture_requested = false;
-    handleCapture();
+    runGlobalCapture();
   }
 
   if (capture_requested_multi) {
@@ -466,6 +469,14 @@ void updateRAMUsage() {
       lv_label_set_text_fmt(label_ram_devices, "RAM: %u/%u KB", used_h/1024, total_h/1024);
     } else {
       lv_label_set_text_fmt(label_ram, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+      if (current_screen == 0) {
+        if (toggleHeader) {
+          lv_label_set_text_fmt(label_status, "Cam: %s", lastGlobalIP.c_str());
+        } else {
+          lv_label_set_text_fmt(label_status, "Res: %dx%d", lastImgW, lastImgH);
+        }
+        toggleHeader = !toggleHeader;
+      }
     }
   }
 }
@@ -533,7 +544,7 @@ void switchScreen(int scr_id) {
 }
 
 void fetchAndApplyConfig() {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED || configTargetIP == "") return;
   lv_label_set_text(label_config_notify, "Fetching status...");
   lv_timer_handler();
 
@@ -579,6 +590,7 @@ void sendConfigChanges() {
     lv_label_set_text(label_config_notify, "Error: No WiFi");
     return;
   }
+  if (configTargetIP == "") return;
   
   lv_label_set_text(label_config_notify, "applying..");
   lv_timer_handler();
@@ -966,8 +978,8 @@ void initPSRAM() {
 }
 
 void controlCamera(const char* var, int val) {
-  if (WiFi.status() != WL_CONNECTED) return;
-  String url = String(cameraServerUrl) + "/control?var=" + String(var) + "&val=" + String(val);
+  if (WiFi.status() != WL_CONNECTED || configTargetIP == "") return;
+  String url = "http://" + configTargetIP + "/control?var=" + String(var) + "&val=" + String(val);
   http.begin(url);
   http.setTimeout(5000);
   http.GET();
@@ -975,8 +987,8 @@ void controlCamera(const char* var, int val) {
 }
 
 void setXCLK(int xclk) {
-  if (WiFi.status() != WL_CONNECTED) return;
-  String url = String(cameraServerUrl) + "/xclk?xclk=" + String(xclk);
+  if (WiFi.status() != WL_CONNECTED || configTargetIP == "") return;
+  String url = "http://" + configTargetIP + "/xclk?xclk=" + String(xclk);
   http.begin(url);
   http.setTimeout(5000);
   http.GET();
@@ -988,7 +1000,11 @@ void handleStatus() {
     server.send(503, "application/json", "{\"error\": \"WiFi disconnected\"}");
     return;
   }
-  String url = String(cameraServerUrl) + "/status";
+  if (configTargetIP == "") {
+    server.send(400, "application/json", "{\"error\": \"No target camera selected\"}");
+    return;
+  }
+  String url = "http://" + configTargetIP + "/status";
   http.begin(url);
   http.setTimeout(5000);
   int httpCode = http.GET();
@@ -1094,11 +1110,11 @@ void freeImageBuffer() {
   }
 }
 
-void captureImage() {
+void captureImage(String targetIP) {
   if (WiFi.status() != WL_CONNECTED) return;
   freeImageBuffer();
   
-  String url = String(cameraServerUrl) + "/capture";
+  String url = "http://" + targetIP + "/capture";
   http.begin(url);
   http.setTimeout(5000); // 5 second connection timeout
   int httpCode = http.GET();
@@ -1128,6 +1144,11 @@ void captureImage() {
         
         if (bytesRead == (size_t)contentLength) {
           imageBufferSize = bytesRead;
+          uint16_t w=0, h=0;
+          if (getJpgSize(imageBuffer, imageBufferSize, &w, &h)) {
+            lastImgW = w;
+            lastImgH = h;
+          }
         } else {
           // Download incomplete or timeout
           freeImageBuffer();
@@ -1139,19 +1160,37 @@ void captureImage() {
 }
 
 void handleCapture() {
-  captureImage();
+  if (!server.hasArg("ip")) {
+    server.send(400, "application/json", "{\"error\": \"Missing ip param\"}");
+    return;
+  }
+  
+  lastGlobalIP = server.arg("ip");
+  switchScreen(0);
+  runGlobalCapture();
+  
   if (imageBuffer && imageBufferSize > 0) {
-    displayImageOrText();
-    lv_label_set_text(label_notify, "Done");
-    notify_done_time = millis();
-    if(notify_done_time == 0) notify_done_time = 1;
     server.send(200, "application/json", "{\"status\": \"ok\", \"size\": " + String(imageBufferSize) + "}");
   } else {
-    lv_label_set_text(label_notify, "Error");
-    notify_done_time = millis();
-    if(notify_done_time == 0) notify_done_time = 1;
     server.send(500, "application/json", "{\"error\": \"Capture fail\"}");
   }
+}
+
+void runGlobalCapture() {
+  if (lastGlobalIP == "") {
+    lv_label_set_text(label_notify, "No Camera IP");
+    return;
+  }
+  captureImage(lastGlobalIP);
+  if (imageBuffer && imageBufferSize > 0) {
+    displayImageOrText();
+    lv_label_set_text(label_status, lastGlobalIP.c_str());
+    lv_label_set_text(label_notify, "Done");
+  } else {
+    lv_label_set_text(label_notify, "Error");
+  }
+  notify_done_time = millis();
+  if (notify_done_time == 0) notify_done_time = 1;
 }
 
 void handleCaptureMulti() {
@@ -1228,11 +1267,7 @@ void displayImageOrText() {
     // Draw scaled JPEG
     tft.drawJpg(imageBuffer, imageBufferSize, x_offset, y_offset, 0, 0, 0, 0, scale, scale);
     
-    if (img_w > 0) {
-      lv_label_set_text_fmt(label_status, "Res: %dx%d (%.1fx)", img_w, img_h, scale);
-    } else {
-      lv_label_set_text_fmt(label_status, "Size: %d B", imageBufferSize);
-    }
+    lv_label_set_text_fmt(label_status, "Cam: %s", lastGlobalIP.c_str());
   } else {
     lv_label_set_text(label_status, "Waiting...");
   }
