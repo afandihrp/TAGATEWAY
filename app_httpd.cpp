@@ -34,6 +34,10 @@
 int led_duty = 0;
 bool isStreaming = false;
 
+static int locked_stream_res = -1;
+static bool stream_res_locked = false;
+static int general_res = -1;
+
 #endif
 
 typedef struct {
@@ -224,6 +228,16 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     last_frame = esp_timer_get_time();
   }
 
+  sensor_t *s = esp_camera_sensor_get();
+  if (general_res == -1) {
+    general_res = s->status.framesize;
+  }
+  if (stream_res_locked && locked_stream_res >= 0) {
+    if (s->status.framesize != locked_stream_res) {
+      s->set_framesize(s, (framesize_t)locked_stream_res);
+    }
+  }
+
   res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
   if (res != ESP_OK) {
     return res;
@@ -300,6 +314,10 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   enable_led(false);
 #endif
 
+  if (s->status.framesize != general_res) {
+    s->set_framesize(s, (framesize_t)general_res);
+  }
+
   return res;
 }
 
@@ -344,9 +362,16 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
   sensor_t *s = esp_camera_sensor_get();
   int res = 0;
 
+  if (general_res == -1) {
+    general_res = s->status.framesize;
+  }
+
   if (!strcmp(variable, "framesize")) {
     if (s->pixformat == PIXFORMAT_JPEG) {
-      res = s->set_framesize(s, (framesize_t)val);
+      general_res = val;
+      if (!(isStreaming && stream_res_locked)) {
+        res = s->set_framesize(s, (framesize_t)val);
+      }
     }
   } else if (!strcmp(variable, "quality")) {
     res = s->set_quality(s, val);
@@ -394,6 +419,24 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
     res = s->set_wb_mode(s, val);
   } else if (!strcmp(variable, "ae_level")) {
     res = s->set_ae_level(s, val);
+  } else if (!strcmp(variable, "stream_res_locked")) {
+    stream_res_locked = (val == 1);
+    if (isStreaming) {
+      if (stream_res_locked && locked_stream_res >= 0) {
+        res = s->set_framesize(s, (framesize_t)locked_stream_res);
+      } else {
+        res = s->set_framesize(s, (framesize_t)general_res);
+      }
+    } else {
+      res = 0;
+    }
+  } else if (!strcmp(variable, "locked_stream_res")) {
+    locked_stream_res = val;
+    if (isStreaming && stream_res_locked) {
+      res = s->set_framesize(s, (framesize_t)val);
+    } else {
+      res = 0;
+    }
   }
 #if defined(LED_GPIO_NUM)
   else if (!strcmp(variable, "led_intensity")) {
@@ -428,6 +471,10 @@ static esp_err_t status_handler(httpd_req_t *req) {
   char *end = json_response + sizeof(json_response);
   *p++ = '{';
 
+  if (general_res == -1) {
+    general_res = s->status.framesize;
+  }
+
   if (s->id.PID == OV5640_PID || s->id.PID == OV3660_PID) {
     for (int reg = 0x3400; reg < 0x3406; reg += 2) {
       p += print_reg(p, end, s, reg, 0xFFF);  //12 bit
@@ -459,7 +506,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
 
   p += snprintf(p, end - p, "\"xclk\":%u,", s->xclk_freq_hz / 1000000);
   p += snprintf(p, end - p, "\"pixformat\":%u,", s->pixformat);
-  p += snprintf(p, end - p, "\"framesize\":%u,", s->status.framesize);
+  p += snprintf(p, end - p, "\"framesize\":%u,", general_res);
   p += snprintf(p, end - p, "\"quality\":%u,", s->status.quality);
   p += snprintf(p, end - p, "\"brightness\":%d,", s->status.brightness);
   p += snprintf(p, end - p, "\"contrast\":%d,", s->status.contrast);
@@ -483,7 +530,9 @@ static esp_err_t status_handler(httpd_req_t *req) {
   p += snprintf(p, end - p, "\"hmirror\":%u,", s->status.hmirror);
   p += snprintf(p, end - p, "\"vflip\":%u,", s->status.vflip);
   p += snprintf(p, end - p, "\"dcw\":%u,", s->status.dcw);
-  p += snprintf(p, end - p, "\"colorbar\":%u", s->status.colorbar);
+  p += snprintf(p, end - p, "\"colorbar\":%u,", s->status.colorbar);
+  p += snprintf(p, end - p, "\"stream_res_locked\":%d,", stream_res_locked ? 1 : 0);
+  p += snprintf(p, end - p, "\"locked_stream_res\":%d", locked_stream_res);
 #if defined(LED_GPIO_NUM)
   p += snprintf(p, end - p, ",\"led_intensity\":%u", led_duty);
 #else
