@@ -1853,6 +1853,9 @@ size_t readStreamFrame() {
 void processStream() {
   if (!streamClient.connected()) return;
 
+  static uint16_t last_stream_w = 0;
+  static uint16_t last_stream_h = 0;
+
   if (streamClient.available()) {
     String line = streamReadLine(50);
     line.trim();
@@ -1881,7 +1884,24 @@ void processStream() {
       }
     }
 
-    tft.drawJpg(jpegStart, jpegLen, 0, 30, screenWidth, screenHeight - 30, 0, 0, JPEG_DIV_NONE);
+    uint16_t img_w = 0, img_h = 0;
+    float scale = 1.0f;
+    if (getJpgSize(jpegStart, jpegLen, &img_w, &img_h)) {
+      if (img_w != last_stream_w || img_h != last_stream_h) {
+        last_stream_w = img_w;
+        last_stream_h = img_h;
+        tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
+      }
+      
+      float ratio_w = (float)screenWidth / img_w;
+      float ratio_h = (float)(screenHeight - 30) / img_h;
+      scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
+      
+      int32_t x_off = (screenWidth - (img_w * scale)) / 2;
+      int32_t y_off = 30 + ((screenHeight - 30) - (img_h * scale)) / 2;
+      tft.drawJpg(jpegStart, jpegLen, x_off, y_off, 0, 0, 0, 0, scale, scale);
+    }
+
     lv_obj_invalidate(top_panel_multi);
   }
 }
