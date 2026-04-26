@@ -34,8 +34,7 @@
 int led_duty = 0;
 bool isStreaming = false;
 
-static int locked_stream_res = 9;
-static bool stream_res_locked = true;
+static int stream_framesize = 9;
 static int general_res = 11;
 
 #endif
@@ -232,10 +231,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   if (general_res == -1) {
     general_res = s->status.framesize;
   }
-  if (stream_res_locked && locked_stream_res >= 0) {
-    if (s->status.framesize != locked_stream_res) {
-      s->set_framesize(s, (framesize_t)locked_stream_res);
-    }
+  if (s->status.framesize != stream_framesize) {
+    s->set_framesize(s, (framesize_t)stream_framesize);
   }
 
   res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
@@ -369,7 +366,7 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
   if (!strcmp(variable, "framesize")) {
     if (s->pixformat == PIXFORMAT_JPEG) {
       general_res = val;
-      if (!(isStreaming && stream_res_locked)) {
+      if (!isStreaming) {
         res = s->set_framesize(s, (framesize_t)val);
       }
     }
@@ -419,20 +416,9 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
     res = s->set_wb_mode(s, val);
   } else if (!strcmp(variable, "ae_level")) {
     res = s->set_ae_level(s, val);
-  } else if (!strcmp(variable, "stream_res_locked")) {
-    stream_res_locked = (val == 1);
+  } else if (!strcmp(variable, "stream_framesize")) {
+    stream_framesize = val;
     if (isStreaming) {
-      if (stream_res_locked && locked_stream_res >= 0) {
-        res = s->set_framesize(s, (framesize_t)locked_stream_res);
-      } else {
-        res = s->set_framesize(s, (framesize_t)general_res);
-      }
-    } else {
-      res = 0;
-    }
-  } else if (!strcmp(variable, "locked_stream_res")) {
-    locked_stream_res = val;
-    if (isStreaming && stream_res_locked) {
       res = s->set_framesize(s, (framesize_t)val);
     } else {
       res = 0;
@@ -531,8 +517,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
   p += snprintf(p, end - p, "\"vflip\":%u,", s->status.vflip);
   p += snprintf(p, end - p, "\"dcw\":%u,", s->status.dcw);
   p += snprintf(p, end - p, "\"colorbar\":%u,", s->status.colorbar);
-  p += snprintf(p, end - p, "\"stream_res_locked\":%d,", stream_res_locked ? 1 : 0);
-  p += snprintf(p, end - p, "\"locked_stream_res\":%d", locked_stream_res);
+  p += snprintf(p, end - p, "\"stream_framesize\":%d", stream_framesize);
 #if defined(LED_GPIO_NUM)
   p += snprintf(p, end - p, ",\"led_intensity\":%u", led_duty);
 #else

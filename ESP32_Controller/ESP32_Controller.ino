@@ -115,6 +115,7 @@ lv_obj_t * sld_brightness;
 lv_obj_t * sld_contrast;
 lv_obj_t * sld_saturation;
 lv_obj_t * sld_framesize;
+lv_obj_t * sld_stream_framesize;
 lv_obj_t * sld_led;
 lv_obj_t * sw_awb;
 lv_obj_t * sw_aec;
@@ -670,6 +671,7 @@ void fetchAndApplyConfig() {
     };
 
     setSld(sld_framesize, "framesize");
+    setSld(sld_stream_framesize, "stream_framesize");
     setSld(sld_quality, "quality");
     setSld(sld_brightness, "brightness");
     setSld(sld_contrast, "contrast");
@@ -727,6 +729,7 @@ void sendConfigChanges() {
   };
   
   sendVal("framesize", lv_slider_get_value(sld_framesize));
+  sendVal("stream_framesize", lv_slider_get_value(sld_stream_framesize));
   sendVal("quality", lv_slider_get_value(sld_quality));
   sendVal("brightness", lv_slider_get_value(sld_brightness));
   sendVal("contrast", lv_slider_get_value(sld_contrast));
@@ -1054,15 +1057,15 @@ void buildConfigScreen() {
   lv_obj_center(lbl_apply);
   lv_obj_add_event_cb(btn_apply, [](lv_event_t *e) { sendConfigChanges(); }, LV_EVENT_CLICKED, NULL);
 
-  create_slider(cont, "Framesize", 0, 13, &sld_framesize);
+  create_slider(cont, "Capture Res", 0, 13, &sld_framesize);
+  create_slider(cont, "Stream Res", 0, 13, &sld_stream_framesize);
   create_slider(cont, "Quality", 0, 63, &sld_quality);
   create_slider(cont, "Brightness", -2, 2, &sld_brightness);
   create_slider(cont, "Contrast", -2, 2, &sld_contrast);
   create_slider(cont, "Saturation", -2, 2, &sld_saturation);
   create_slider(cont, "LED Flash", 0, 255, &sld_led);
   
-  // Custom Callback for Framesize to show resolution string
-  lv_obj_add_event_cb(sld_framesize, [](lv_event_t * e) {
+  auto res_cb = [](lv_event_t * e) {
       lv_obj_t * s = lv_event_get_target(e);
       lv_obj_t * v = (lv_obj_t *)lv_event_get_user_data(e);
       int idx = lv_slider_get_value(s);
@@ -1071,7 +1074,10 @@ void buildConfigScreen() {
       } else {
         lv_label_set_text_fmt(v, "%d", idx);
       }
-  }, LV_EVENT_VALUE_CHANGED, lv_obj_get_child(lv_obj_get_parent(sld_framesize), 2));
+  };
+
+  lv_obj_add_event_cb(sld_framesize, res_cb, LV_EVENT_VALUE_CHANGED, lv_obj_get_child(lv_obj_get_parent(sld_framesize), 2));
+  lv_obj_add_event_cb(sld_stream_framesize, res_cb, LV_EVENT_VALUE_CHANGED, lv_obj_get_child(lv_obj_get_parent(sld_stream_framesize), 2));
 
   // Custom Callback for LED Flash to show percentage
   lv_obj_add_event_cb(sld_led, [](lv_event_t * e) {
