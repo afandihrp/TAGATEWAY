@@ -1,27 +1,39 @@
+/*
+ * MJPEG Stream Viewer — ESP32 + ILI9488 (LovyanGFX)
+ * Displays a live MJPEG stream from an ESP32-CAM over WiFi.
+ *
+ * Wiring (VSPI):
+ *   SCLK → 18 | MOSI → 23 | MISO → 19
+ *   DC   →  2 | CS   → 15 | RST  →  4
+ */
+
 #include <WiFi.h>
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 
+// ============================================================
+//  Display Configuration — ILI9488 480×320
+// ============================================================
 class LGFX : public lgfx::LGFX_Device {
-  lgfx::Panel_ILI9488 _panel_instance;
-  lgfx::Bus_SPI       _bus_instance;
+  lgfx::Panel_ILI9488 _panel;
+  lgfx::Bus_SPI       _bus;
 public:
-  LGFX(void) {
+  LGFX() {
     {
-      auto cfg = _bus_instance.config();
-      cfg.spi_host   = VSPI_HOST;
-      cfg.spi_mode   = 0;
-      cfg.freq_write = 75000000;
+      auto cfg      = _bus.config();
+      cfg.spi_host  = VSPI_HOST;
+      cfg.spi_mode  = 0;
+      cfg.freq_write = 75000000; // 40 MHz — safe ceiling for ILI9488
       cfg.freq_read  = 16000000;
-      cfg.pin_sclk   = 18;
-      cfg.pin_mosi   = 23;
-      cfg.pin_miso   = 19;
-      cfg.pin_dc     = 2;
-      _bus_instance.config(cfg);
-      _panel_instance.setBus(&_bus_instance);
+      cfg.pin_sclk  = 18;
+      cfg.pin_mosi  = 23;
+      cfg.pin_miso  = 19;
+      cfg.pin_dc    = 2;
+      _bus.config(cfg);
+      _panel.setBus(&_bus);
     }
     {
-      auto cfg = _panel_instance.config();
+      auto cfg             = _panel.config();
       cfg.pin_cs           = 15;
       cfg.pin_rst          = 4;
       cfg.pin_busy         = -1;
@@ -35,255 +47,254 @@ public:
       cfg.rgb_order        = false;
       cfg.dlen_16bit       = false;
       cfg.bus_shared       = true;
-      _panel_instance.config(cfg);
+      _panel.config(cfg);
     }
-    setPanel(&_panel_instance);
+    setPanel(&_panel);
   }
 };
 
-LGFX lcd;
+// ============================================================
+//  Configuration
+// ============================================================
+static const char* WIFI_SSID   = "BatuKhan";
+static const char* WIFI_PASS   = "momoygemoy";
+static const char* CAM_HOST    = "192.168.11.249";
+static const int   CAM_PORT    = 81;
+static const char* CAM_PATH    = "/stream";
 
-const char* ssid       = "BatuKhan";
-const char* password   = "momoygemoy";
-const char* streamHost = "192.168.11.249";
-const int   streamPort = 81;
-const char* streamPath = "/stream";
+// JPEG buffer — increase if your CAM resolution is VGA or higher
+static const size_t JPEG_BUF_SIZE = 80000;
 
-WiFiClient client;
+// ============================================================
+//  Globals
+// ============================================================
+LGFX        lcd;
+WiFiClient  client;
+uint8_t*    jpegBuf = nullptr;
 
-// ── Wait for data with timeout ─────────────────────────────────────────────
-bool waitForData(uint32_t timeoutMs = 3000) {
+// FPS tracking
+uint32_t    frameCount = 0;
+uint32_t    fpsTimer   = 0;
+
+// ============================================================
+//  Helpers
+// ============================================================
+
+// Read one \n-terminated line, strip \r
+String readLine(uint32_t timeoutMs = 2000) {
+  String s;
+  s.reserve(64);
+  uint32_t deadline = millis() + timeoutMs;
+  while (millis() < deadline) {
+    if (client.available()) {
+      char c = (char)client.read();
+      if (c == '\n') break;
+      if (c != '\r') s += c;
+      deadline = millis() + timeoutMs; // reset on each byte
+    }
+  }
+  return s;
+}
+
+// Read exactly `len` bytes — returns false on timeout
+bool readExact(uint8_t* dst, size_t len, uint32_t timeoutMs = 5000) {
+  size_t got = 0;
+  uint32_t deadline = millis() + timeoutMs;
+  while (got < len && millis() < deadline) {
+    int avail = client.available();
+    if (avail > 0) {
+      size_t take = min((size_t)avail, len - got);
+      client.readBytes(dst + got, take); // bulk read — faster than byte loop
+      got += take;
+      deadline = millis() + timeoutMs;
+    }
+  }
+  return got == len;
+}
+
+// Consume HTTP or MJPEG part headers until a blank line
+void skipHeaders() {
+  while (client.connected()) {
+    if (readLine().length() == 0) break;
+  }
+}
+
+// ============================================================
+//  Connect & send HTTP GET
+// ============================================================
+bool connectToStream() {
+  client.stop();
+
+  lcd.fillScreen(TFT_BLACK);
+  lcd.setCursor(8, 8);
+  lcd.setTextColor(TFT_WHITE);
+  lcd.setTextSize(2);
+  lcd.print("Connecting to cam...");
+
+  if (!client.connect(CAM_HOST, CAM_PORT)) {
+    Serial.println("[ERR] TCP connect failed");
+    return false;
+  }
+
+  // Disable Nagle — reduces latency on small packets
+  client.setNoDelay(true);
+
+  client.printf(
+    "GET %s HTTP/1.1\r\n"
+    "Host: %s:%d\r\n"
+    "Connection: keep-alive\r\n"
+    "\r\n",
+    CAM_PATH, CAM_HOST, CAM_PORT);
+
+  // Wait for first byte of response
   uint32_t t = millis();
   while (!client.available()) {
-    if (millis() - t > timeoutMs) return false;
+    if (millis() - t > 5000) { Serial.println("[ERR] No response"); return false; }
     delay(1);
   }
+
+  skipHeaders(); // skip HTTP/1.1 200 OK … headers
+
+  Serial.println("[OK] Stream connected");
+  lcd.fillScreen(TFT_BLACK);
+  fpsTimer = millis();
+  frameCount = 0;
   return true;
 }
 
-// ── Read one line stripped of \r\n ─────────────────────────────────────────
-String readLine() {
-  String line = "";
-  uint32_t t = millis();
-  while (millis() - t < 3000) {
-    if (client.available()) {
-      char c = client.read();
-      if (c == '\n') break;
-      if (c != '\r') line += c;
-      t = millis();
-    }
-  }
-  return line;
-}
-
-// ── Read exactly n bytes ───────────────────────────────────────────────────
-bool readExact(uint8_t* buf, size_t len, uint32_t timeoutMs = 8000) {
-  size_t got = 0;
-  uint32_t t = millis();
-  while (got < len) {
-    if (millis() - t > timeoutMs) {
-      Serial.printf("[ERR] readExact timeout at %d/%d\n", got, len);
-      return false;
-    }
-    if (client.available()) {
-      buf[got++] = (uint8_t)client.read();
-      t = millis();
-    }
-  }
-  return true;
-}
-
-// ── Skip HTTP headers until blank line ────────────────────────────────────
-void skipHttpHeaders() {
-  while (client.connected()) {
-    String line = readLine();
-    Serial.println(line);
-    if (line.length() == 0) break;
-  }
-}
-
-// ── Read chunked JPEG — stops at 0xFF 0xD9 end-of-image marker ────────────
-// Pattern observed: chunks of 75 + ~3670 + 36 bytes repeat per frame
-// The 36-byte chunk (0x24) is the next boundary embedded as a chunk
-// So we stop as soon as we see the JPEG EOI marker FF D9
-uint8_t* readJpegUntilEOI(size_t& outLen) {
-  const size_t MAX_JPEG = 60000;
-  uint8_t* buf = (uint8_t*)malloc(MAX_JPEG);
-  if (!buf) { Serial.println("[ERR] malloc fail"); return nullptr; }
-  outLen = 0;
+// ============================================================
+//  Read one MJPEG frame from chunked stream
+//  Returns number of bytes written into jpegBuf, 0 on error.
+// ============================================================
+size_t readFrame() {
+  size_t total = 0;
 
   while (client.connected()) {
-    // Read hex chunk size line
+    // Each iteration: read one HTTP chunk
     String sizeLine = readLine();
     sizeLine.trim();
     if (sizeLine.length() == 0) continue;
 
-    size_t chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
+    size_t chunkSize = strtoul(sizeLine.c_str(), nullptr, 16);
+    if (chunkSize == 0) { readLine(); break; } // final chunk
 
-    if (chunkSize == 0) {
-      readLine(); // consume trailing CRLF of final chunk
-      break;
+    if (total + chunkSize > JPEG_BUF_SIZE) {
+      Serial.printf("[ERR] Frame overflow %u + %u\n", total, chunkSize);
+      return 0;
     }
 
-    // Guard against overflow
-    if (outLen + chunkSize > MAX_JPEG) {
-      Serial.printf("[ERR] overflow: have %d + chunk %d > %d\n", outLen, chunkSize, MAX_JPEG);
-      free(buf);
-      return nullptr;
+    if (!readExact(jpegBuf + total, chunkSize)) {
+      Serial.println("[ERR] readExact timeout");
+      return 0;
     }
 
-    if (!readExact(buf + outLen, chunkSize)) {
-      free(buf);
-      return nullptr;
-    }
+    total += chunkSize;
+    readLine(); // consume trailing CRLF after chunk data
 
-    outLen += chunkSize;
-    readLine(); // consume CRLF after chunk data
-
-    // ── Check last 2 bytes for JPEG EOI marker 0xFF 0xD9 ──────────────────
-    if (outLen >= 2 &&
-        buf[outLen - 2] == 0xFF &&
-        buf[outLen - 1] == 0xD9) {
-      Serial.printf("[EOI] JPEG complete: %d bytes\n", outLen);
+    // JPEG EOI = FF D9 → frame complete
+    if (total >= 2 &&
+        jpegBuf[total - 2] == 0xFF &&
+        jpegBuf[total - 1] == 0xD9) {
       break;
     }
   }
 
-  return buf;
+  return total;
 }
 
-void connectToStream() {
-  client.stop();
-  delay(100);
-  lcd.fillScreen(TFT_BLACK);
-  lcd.setCursor(10, 10);
-  lcd.setTextColor(TFT_WHITE);
-  lcd.setTextSize(2);
-  lcd.println("Connecting...");
-
-  Serial.println("\nConnecting to stream...");
-  if (!client.connect(streamHost, streamPort)) {
-    Serial.println("[ERR] Connection failed, retrying in 3s");
-    delay(3000);
-    return;
-  }
-
-  client.printf("GET %s HTTP/1.1\r\nHost: %s:%d\r\nConnection: keep-alive\r\n\r\n",
-                streamPath, streamHost, streamPort);
-
-  if (!waitForData(5000)) {
-    Serial.println("[ERR] No response");
-    return;
-  }
-
-  Serial.println("--- HTTP Headers ---");
-  skipHttpHeaders();
-  Serial.println("--- End Headers ---");
-  Serial.println("[OK] Ready");
-  lcd.fillScreen(TFT_BLACK);
-}
-
-void loop() {
-  if (!client.connected()) {
-    connectToStream();
-    return;
-  }
-
-  if (!waitForData(5000)) {
-    Serial.println("[WARN] Timeout, reconnecting...");
-    connectToStream();
-    return;
-  }
-
-  String line = readLine();
-  line.trim();
-  if (line.length() == 0) return;
-
-  // Handle chunk-wrapped boundary
-  if (!line.startsWith("--")) {
-    size_t maybeChunkSize = strtol(line.c_str(), nullptr, 16);
-    if (maybeChunkSize > 0 && maybeChunkSize < 200) {
-      // Likely a chunk header wrapping the boundary line
-      line = readLine();
-      line.trim();
-    }
-    if (!line.startsWith("--")) return; // not a boundary, skip
-  }
-
-  Serial.println("[BOUNDARY] found");
-
-  // Read and discard part headers (Content-Type: image/jpeg etc.)
-  while (client.connected()) {
-    String hdr = readLine();
-    hdr.trim();
-    if (hdr.length() == 0) break;
-    Serial.println("[PART HDR] " + hdr);
-  }
-
-  // Read JPEG chunks until EOI marker
-  size_t jpegLen = 0;
-  uint8_t* jpegBuf = readJpegUntilEOI(jpegLen);
-
-// Replace your draw block in loop() with this:
-
-if (jpegBuf && jpegLen > 100) {
-
-  // ── Find actual JPEG start (FF D8) ──────────────────────────────────────
-  int jpegStart = -1;
-  for (int i = 0; i < (int)jpegLen - 1; i++) {
-    if (jpegBuf[i] == 0xFF && jpegBuf[i+1] == 0xD8) {
-      jpegStart = i;
-      break;
-    }
-  }
-
-  if (jpegStart < 0) {
-    Serial.println("[ERR] No FF D8 found in buffer");
-    free(jpegBuf);
-    return;
-  }
-
-  if (jpegStart > 0) {
-    Serial.printf("[INFO] FF D8 at offset %d (skipping %d bytes of header)\n",
-                  jpegStart, jpegStart);
-  }
-
-  size_t realLen = jpegLen - jpegStart;
-  Serial.printf("[DRAW] %d bytes (start offset %d)\n", realLen, jpegStart);
-
-  // Draw centered on 480x320 display
-  lcd.drawJpg(jpegBuf + jpegStart, realLen, 0, 0, 480, 320, 0, 0, JPEG_DIV_NONE);
-
-  } else {
-    Serial.printf("[WARN] Bad frame: len=%d\n", jpegLen);
-  }
-
-  if (jpegBuf) free(jpegBuf);
-}
-
+// ============================================================
+//  Setup
+// ============================================================
 void setup() {
   Serial.begin(115200);
 
+  // --- Display init ---
   lcd.init();
-  lcd.setRotation(1);
+  lcd.setRotation(1); // landscape
   lcd.fillScreen(TFT_BLACK);
   lcd.setTextColor(TFT_WHITE);
   lcd.setTextSize(2);
-  lcd.setCursor(10, 10);
-  lcd.println("Starting...");
+  lcd.setCursor(8, 8);
+  lcd.print("Starting...");
 
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  // --- Allocate JPEG buffer once (no repeated malloc/free) ---
+  jpegBuf = (uint8_t*)heap_caps_malloc(JPEG_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!jpegBuf) {
+    // Fall back to internal RAM if no PSRAM
+    jpegBuf = (uint8_t*)malloc(JPEG_BUF_SIZE);
   }
-  Serial.println("\nWiFi: " + WiFi.localIP().toString());
+  if (!jpegBuf) {
+    Serial.println("[FATAL] Cannot allocate JPEG buffer");
+    while (true) delay(1000);
+  }
 
-  lcd.fillScreen(TFT_BLACK);
-  lcd.setCursor(10, 10);
-  lcd.println("WiFi OK");
-  lcd.println(WiFi.localIP());
-  delay(1000);
+  // --- WiFi ---
+  WiFi.setSleep(false); // disable WiFi modem sleep → lower latency
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  lcd.setCursor(8, 40);
+  lcd.print("WiFi");
+  while (WiFi.status() != WL_CONNECTED) { delay(250); lcd.print("."); }
+  Serial.printf("[WiFi] %s\n", WiFi.localIP().toString().c_str());
 
   connectToStream();
+}
+
+// ============================================================
+//  Loop
+// ============================================================
+void loop() {
+  if (!client.connected()) {
+    Serial.println("[WARN] Disconnected — reconnecting...");
+    delay(1000);
+    connectToStream();
+    return;
+  }
+
+  // ── Find MJPEG boundary ────────────────────────────────────────────────
+  String line = readLine();
+  line.trim();
+
+  if (line.length() == 0) return;
+
+  // The boundary may arrive wrapped inside its own chunk header
+  if (!line.startsWith("--")) {
+    // Try interpreting as a hex chunk size; if small, peek at the next line
+    unsigned long maybeSize = strtoul(line.c_str(), nullptr, 16);
+    if (maybeSize > 0 && maybeSize < 256) {
+      line = readLine();
+      line.trim();
+    }
+    if (!line.startsWith("--")) return; // unrecognised — skip
+  }
+
+  // ── Skip MJPEG part headers (Content-Type: image/jpeg …) ──────────────
+  skipHeaders();
+
+  // ── Read frame ────────────────────────────────────────────────────────
+  size_t frameLen = readFrame();
+  if (frameLen < 4) return;
+
+  // Find FF D8 (some streams prepend part-header text before the SOI)
+  uint8_t* jpegStart = jpegBuf;
+  size_t   jpegLen   = frameLen;
+  for (size_t i = 0; i < frameLen - 1; i++) {
+    if (jpegBuf[i] == 0xFF && jpegBuf[i + 1] == 0xD8) {
+      jpegStart = jpegBuf + i;
+      jpegLen   = frameLen - i;
+      break;
+    }
+  }
+
+  // ── Draw ──────────────────────────────────────────────────────────────
+  lcd.drawJpg(jpegStart, jpegLen, 0, 0, lcd.width(), lcd.height(), 0, 0, JPEG_DIV_NONE);
+
+  // ── FPS counter (Serial only) ─────────────────────────────────────────
+  frameCount++;
+  uint32_t elapsed = millis() - fpsTimer;
+  if (elapsed >= 3000) {
+    Serial.printf("[FPS] %.1f  frame=%u bytes\n",
+                  frameCount * 1000.0f / elapsed, frameLen);
+    frameCount = 0;
+    fpsTimer   = millis();
+  }
 }
