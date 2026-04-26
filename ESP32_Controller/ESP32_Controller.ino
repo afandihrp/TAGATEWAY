@@ -137,6 +137,7 @@ uint32_t notify_done_time = 0;
 bool ip_reloaded = false;
 uint32_t ip_notify_time = 0;
 bool is_streaming = false;
+bool stream_paused = false;
 
 HTTPClient http;
 WiFiClient streamClient;
@@ -464,6 +465,18 @@ void loop() {
             capture_requested_multi = true;
             lv_label_set_text(label_notify_multi, "Capturing...");
             lv_timer_handler();
+          } else {
+            stream_paused = !stream_paused;
+            if (stream_paused) {
+              stopStream();
+              lv_label_set_text(label_notify_multi, "Paused");
+            } else {
+              lv_label_set_text(label_notify_multi, "Connecting...");
+              lv_timer_handler();
+              connectToStream();
+              lv_label_set_text(label_notify_multi, "Streaming");
+            }
+            lv_timer_handler();
           }
         }
       }
@@ -471,7 +484,7 @@ void loop() {
   }
   was_touched = is_touched;
 
-  if (current_screen == 4 && is_streaming) {
+  if (current_screen == 4 && is_streaming && !stream_paused) {
     processStream();
   }
 
@@ -486,8 +499,11 @@ void loop() {
   }
   
   if (notify_done_time > 0 && millis() - notify_done_time > 2000) {
-    if (current_screen == 4) lv_label_set_text(label_notify_multi, "Tap to capture");
-    else lv_label_set_text(label_notify, "Tap to capture");
+    if (current_screen == 4) {
+      if (!is_streaming) lv_label_set_text(label_notify_multi, "Tap to capture");
+    } else {
+      lv_label_set_text(label_notify, "Tap to capture");
+    }
     notify_done_time = 0;
   }
   
@@ -583,7 +599,11 @@ void switchScreen(int scr_id) {
     lv_scr_load(scr_multi);
     
     if (is_streaming) {
+      stream_paused = false;
+      lv_label_set_text(label_notify_multi, "Streaming");
       connectToStream();
+    } else {
+      lv_label_set_text(label_notify_multi, "Tap to capture");
     }
     
     uint32_t t = millis();
@@ -1584,7 +1604,7 @@ void buildIpSelectScreen() {
       lv_obj_set_size(btn_sel, 65, 30);
       lv_obj_set_style_bg_color(btn_sel, lv_palette_main(LV_PALETTE_BLUE), 0);
       lv_obj_t * lbl_btn = lv_label_create(btn_sel);
-      lv_label_set_text(lbl_btn, "SEL");
+      lv_label_set_text(lbl_btn, "SELECT");
       lv_obj_center(lbl_btn);
 
       lv_obj_set_user_data(btn_sel, (void*)devices[i].ip.c_str());
@@ -1603,7 +1623,7 @@ void buildIpSelectScreen() {
         lv_obj_set_style_bg_color(btn_stream, lv_palette_main(LV_PALETTE_GREY), 0);
       }
       lv_obj_t * lbl_strm = lv_label_create(btn_stream);
-      lv_label_set_text(lbl_strm, "STRM");
+      lv_label_set_text(lbl_strm, "STREAM");
       lv_obj_center(lbl_strm);
 
       lv_obj_set_user_data(btn_stream, (void*)devices[i].ip.c_str());
