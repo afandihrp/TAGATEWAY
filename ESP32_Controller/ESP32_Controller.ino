@@ -28,6 +28,7 @@ public:
     bcfg.spi_host   = VSPI_HOST;
     bcfg.spi_mode   = 0;
     bcfg.freq_write = 65000000;
+    bcfg.freq_write = 75000000;
     bcfg.freq_read  = 16000000;
     bcfg.pin_sclk   = 18;
     bcfg.pin_mosi   = 23;
