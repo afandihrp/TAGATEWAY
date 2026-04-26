@@ -27,9 +27,8 @@ public:
     auto bcfg = _bus_instance.config();
     bcfg.spi_host   = VSPI_HOST;
     bcfg.spi_mode   = 0;
-    bcfg.freq_write = 65000000;
     bcfg.freq_write = 75000000;
-    bcfg.freq_read  = 16000000;
+    bcfg.freq_read  = 40000000;
     bcfg.pin_sclk   = 18;
     bcfg.pin_mosi   = 23;
     bcfg.pin_miso   = 19;
@@ -99,7 +98,10 @@ lv_obj_t * label_ram_multi;
 lv_obj_t * label_notify_multi;
 lv_obj_t * label_ram_stats;
 lv_obj_t * label_ram_devices;
-lv_obj_t * dd_cameras;
+lv_obj_t * scr_ip_select;
+lv_obj_t * btn_select_ip;
+lv_obj_t * label_select_ip;
+lv_obj_t * label_ip_title;
 
 // Top Layer Nav Buttons & Config Notifications
 lv_obj_t * nav_btn_left;
@@ -122,6 +124,7 @@ lv_obj_t * sw_vflip;
 // Global flags
 int current_screen = 0; // 0: Image, 1: Config
 String configTargetIP = "";
+String multiTargetIP = "Select IP";
 String lastGlobalIP = "";
 int lastImgW = 0;
 int lastImgH = 0;
@@ -129,6 +132,8 @@ bool toggleHeader = false;
 bool capture_requested = false;
 bool capture_requested_multi = false;
 uint32_t notify_done_time = 0;
+bool ip_reloaded = false;
+uint32_t ip_notify_time = 0;
 
 HTTPClient http;
 WebServer server(80);
@@ -163,6 +168,7 @@ void buildConfigScreen();
 void buildStatsScreen();
 void buildDevicesScreen();
 void buildMultiScreen();
+void buildIpSelectScreen();
 void fetchAndApplyConfig();
 void sendConfigChanges();
 void switchScreen(int scr_id);
@@ -308,6 +314,10 @@ void setup() {
   lv_obj_set_style_pad_all(scr_multi, 0, 0);
   lv_obj_set_style_bg_color(scr_multi, lv_color_hex(0x202020), 0);
 
+  scr_ip_select = lv_obj_create(NULL);
+  lv_obj_set_style_pad_all(scr_ip_select, 0, 0);
+  lv_obj_set_style_bg_color(scr_ip_select, lv_color_hex(0x202020), 0);
+
   // Initialize UI components on Image Screen
   label_status = lv_label_create(top_panel);
   lv_label_set_text(label_status, "Ready...");
@@ -452,6 +462,11 @@ void loop() {
     notify_done_time = 0;
   }
   
+  if (ip_notify_time > 0 && millis() - ip_notify_time > 1000) {
+    if (current_screen == 5) lv_label_set_text(label_ip_title, "Select Camera IP");
+    ip_notify_time = 0;
+  }
+  
   delay(5);
 }
 
@@ -522,17 +537,16 @@ void switchScreen(int scr_id) {
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
     freeImageBuffer();
     
-    // Populate Dropdown
-    lv_dropdown_clear_options(dd_cameras);
-    bool has_dev = false;
-    for (int i = 0; i < 5; i++) {
-      if (devices[i].ip != "") {
-        lv_dropdown_add_option(dd_cameras, devices[i].ip.c_str(), LV_DROPDOWN_POS_LAST);
-        has_dev = true;
+    if (multiTargetIP == "Select IP") {
+      for (int i = 0; i < 5; i++) {
+        if (devices[i].ip != "") {
+          multiTargetIP = devices[i].ip;
+          break;
+        }
       }
     }
-    if (!has_dev) lv_dropdown_add_option(dd_cameras, "No Devices", LV_DROPDOWN_POS_LAST);
     
+    lv_label_set_text(label_select_ip, multiTargetIP.c_str());
     lv_scr_load(scr_multi);
     
     uint32_t t = millis();
@@ -541,6 +555,13 @@ void switchScreen(int scr_id) {
       delay(5);
     }
     displayMultiImageOrText();
+  } else if (scr_id == 5) {
+    lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
+    freeImageBuffer();
+    lv_obj_clean(scr_ip_select);
+    buildIpSelectScreen();
+    lv_scr_load(scr_ip_select);
   }
 }
 
@@ -839,10 +860,8 @@ void buildMultiScreen() {
   lv_obj_set_style_border_color(btn_cfg, lv_color_white(), 0);
   lv_obj_set_style_shadow_width(btn_cfg, 0, 0);
   lv_obj_add_event_cb(btn_cfg, [](lv_event_t *e) {
-    char ip_buf[32];
-    lv_dropdown_get_selected_str(dd_cameras, ip_buf, sizeof(ip_buf));
-    configTargetIP = String(ip_buf);
-    if (configTargetIP != "No Devices") {
+    configTargetIP = multiTargetIP;
+    if (configTargetIP != "Select IP") {
       switchScreen(1);
     }
   }, LV_EVENT_CLICKED, NULL);
@@ -851,12 +870,20 @@ void buildMultiScreen() {
   lv_label_set_text(lbl_cfg, LV_SYMBOL_SETTINGS);
   lv_obj_center(lbl_cfg);
 
-  // Dropdown for IP selection
-  dd_cameras = lv_dropdown_create(top_panel_multi);
-  lv_obj_set_size(dd_cameras, 150, 28);
-  lv_obj_align(dd_cameras, LV_ALIGN_LEFT_MID, 45, 0);
-  lv_obj_set_style_text_font(dd_cameras, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_pad_all(dd_cameras, 2, 0);
+  // Button for IP selection
+  btn_select_ip = lv_btn_create(top_panel_multi);
+  lv_obj_set_size(btn_select_ip, 150, 28);
+  lv_obj_align(btn_select_ip, LV_ALIGN_LEFT_MID, 45, 0);
+  lv_obj_set_style_bg_opa(btn_select_ip, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(btn_select_ip, 1, 0);
+  lv_obj_set_style_border_color(btn_select_ip, lv_color_white(), 0);
+  lv_obj_set_style_shadow_width(btn_select_ip, 0, 0);
+  lv_obj_add_event_cb(btn_select_ip, [](lv_event_t *e) { switchScreen(5); }, LV_EVENT_CLICKED, NULL);
+
+  label_select_ip = lv_label_create(btn_select_ip);
+  lv_label_set_text(label_select_ip, multiTargetIP.c_str());
+  lv_obj_set_style_text_font(label_select_ip, &lv_font_montserrat_14, 0);
+  lv_obj_center(label_select_ip);
 
   label_ram_multi = lv_label_create(top_panel_multi);
   lv_label_set_text(label_ram_multi, "RAM: --");
@@ -1294,12 +1321,10 @@ void displayImageOrText() {
 void captureMultiImage() {
   if (WiFi.status() != WL_CONNECTED) return;
   
-  char ip_buf[32];
-  lv_dropdown_get_selected_str(dd_cameras, ip_buf, sizeof(ip_buf));
-  if (String(ip_buf) == "No Devices") return;
+  if (multiTargetIP == "Select IP") return;
 
   freeImageBuffer();
-  String url = "http://" + String(ip_buf) + "/capture";
+  String url = "http://" + multiTargetIP + "/capture";
   
   http.begin(url);
   http.setTimeout(5000);
@@ -1352,6 +1377,132 @@ void displayMultiImageOrText() {
   tft.setTextColor(TFT_WHITE);
   tft.setCursor(12, 150); tft.print("<");
   tft.setCursor(screenWidth - 25, 150); tft.print(">");
+}
+
+void buildIpSelectScreen() {
+  // Top Section
+  lv_obj_t * top_panel_ip = lv_obj_create(scr_ip_select);
+  lv_obj_set_size(top_panel_ip, screenWidth, 30);
+  lv_obj_align(top_panel_ip, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_pad_all(top_panel_ip, 0, 0);
+  lv_obj_set_style_border_width(top_panel_ip, 0, 0);
+  lv_obj_set_style_radius(top_panel_ip, 0, 0);
+  lv_obj_set_style_bg_color(top_panel_ip, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+
+  // Back Button
+  lv_obj_t * btn_back = lv_btn_create(top_panel_ip);
+  lv_obj_set_size(btn_back, 80, 28);
+  lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 5, 0);
+  lv_obj_set_style_bg_opa(btn_back, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(btn_back, 1, 0);
+  lv_obj_set_style_border_color(btn_back, lv_color_white(), 0);
+  lv_obj_set_style_shadow_width(btn_back, 0, 0);
+  lv_obj_add_event_cb(btn_back, [](lv_event_t *e) { switchScreen(4); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t * lbl_back = lv_label_create(btn_back);
+  lv_label_set_text(lbl_back, LV_SYMBOL_LEFT " Back");
+  lv_obj_center(lbl_back);
+
+  label_ip_title = lv_label_create(top_panel_ip);
+  if (ip_reloaded) {
+    lv_label_set_text(label_ip_title, "Table refreshed");
+    ip_notify_time = millis();
+    if (ip_notify_time == 0) ip_notify_time = 1;
+    ip_reloaded = false;
+  } else {
+    lv_label_set_text(label_ip_title, "Select Camera IP");
+  }
+  lv_obj_set_style_text_color(label_ip_title, lv_color_white(), 0);
+  lv_obj_align(label_ip_title, LV_ALIGN_CENTER, 20, 0);
+
+  // Reload Button
+  lv_obj_t * btn_reload = lv_btn_create(top_panel_ip);
+  lv_obj_set_size(btn_reload, 35, 28);
+  lv_obj_align(btn_reload, LV_ALIGN_RIGHT_MID, -5, 0);
+  lv_obj_set_style_bg_opa(btn_reload, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(btn_reload, 1, 0);
+  lv_obj_set_style_border_color(btn_reload, lv_color_white(), 0);
+  lv_obj_set_style_shadow_width(btn_reload, 0, 0);
+  lv_obj_add_event_cb(btn_reload, [](lv_event_t *e) { 
+    ip_reloaded = true;
+    switchScreen(5); 
+  }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t * lbl_reload = lv_label_create(btn_reload);
+  lv_label_set_text(lbl_reload, LV_SYMBOL_REFRESH);
+  lv_obj_center(lbl_reload);
+
+  // Body container (Scrollable)
+  lv_obj_t * cont = lv_obj_create(scr_ip_select);
+  lv_obj_set_size(cont, 400, screenHeight - 30);
+  lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_all(cont, 10, 0);
+  lv_obj_set_style_pad_row(cont, 5, 0);
+  lv_obj_set_style_border_width(cont, 0, 0);
+  lv_obj_set_style_radius(cont, 0, 0);
+  lv_obj_set_style_bg_color(cont, lv_color_hex(0x202020), 0);
+
+  // Header Row
+  lv_obj_t * row_hdr = lv_obj_create(cont);
+  lv_obj_set_size(row_hdr, 380, 30);
+  lv_obj_set_style_bg_color(row_hdr, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+  lv_obj_set_style_border_width(row_hdr, 0, 0);
+  lv_obj_set_style_radius(row_hdr, 3, 0);
+  lv_obj_set_style_pad_all(row_hdr, 0, 0);
+  lv_obj_set_flex_flow(row_hdr, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(row_hdr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  auto add_hdr_col = [](lv_obj_t* parent, const char* txt, int w) {
+    lv_obj_t * lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, txt);
+    lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(lbl, w);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+  };
+
+  add_hdr_col(row_hdr, "IP Address", 240);
+  add_hdr_col(row_hdr, "Action", 100);
+
+  // Rows
+  for (int i = 0; i < 5; i++) {
+    if (devices[i].ip != "") {
+      lv_obj_t * row = lv_obj_create(cont);
+      lv_obj_set_size(row, 380, 45);
+      lv_obj_set_style_bg_color(row, lv_color_hex(0x303030), 0);
+      lv_obj_set_style_border_width(row, 0, 0);
+      lv_obj_set_style_radius(row, 3, 0);
+      lv_obj_set_style_pad_all(row, 0, 0);
+      lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+      lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+      lv_obj_t * lbl_ip = lv_label_create(row);
+      lv_label_set_text(lbl_ip, devices[i].ip.c_str());
+      lv_obj_set_style_text_color(lbl_ip, lv_color_white(), 0);
+      lv_obj_set_width(lbl_ip, 240);
+      lv_obj_set_style_text_align(lbl_ip, LV_TEXT_ALIGN_CENTER, 0);
+
+      lv_obj_t * btn_sel = lv_btn_create(row);
+      lv_obj_set_size(btn_sel, 80, 30);
+      lv_obj_set_style_bg_color(btn_sel, lv_palette_main(LV_PALETTE_BLUE), 0);
+      lv_obj_t * lbl_btn = lv_label_create(btn_sel);
+      lv_label_set_text(lbl_btn, "SELECT");
+      lv_obj_center(lbl_btn);
+
+      // Store IP in user_data or capture in lambda
+      String target_ip = devices[i].ip;
+      lv_obj_add_event_cb(btn_sel, [](lv_event_t *e) {
+        lv_obj_t * target_lbl = (lv_obj_t *)lv_event_get_user_data(e);
+        const char * ip = (const char *)lv_obj_get_user_data(lv_event_get_target(e));
+        multiTargetIP = String(ip);
+        switchScreen(4);
+      }, LV_EVENT_CLICKED, NULL);
+      // We need a way to pass the string. For simplicity, we can use a static array of strings or capture it if the compiler allows.
+      // But LVGL callbacks are usually static. Let's use lv_obj_set_user_data.
+      // Note: we need to be careful with string lifetimes. Since devices[i].ip is a global String array, we can use its c_str().
+      lv_obj_set_user_data(btn_sel, (void*)devices[i].ip.c_str());
+    }
+  }
 }
 
 const char* getHtmlUI() {
