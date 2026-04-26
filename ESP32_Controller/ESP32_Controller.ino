@@ -1057,8 +1057,8 @@ void buildConfigScreen() {
   lv_obj_center(lbl_apply);
   lv_obj_add_event_cb(btn_apply, [](lv_event_t *e) { sendConfigChanges(); }, LV_EVENT_CLICKED, NULL);
 
-  create_slider(cont, "Capture Res", 0, 13, &sld_framesize);
-  create_slider(cont, "Stream Res", 0, 13, &sld_stream_framesize);
+  create_slider(cont, "Capture Framesize", 0, 13, &sld_framesize);
+  create_slider(cont, "Stream Framesize", 0, 13, &sld_stream_framesize);
   create_slider(cont, "Quality", 0, 63, &sld_quality);
   create_slider(cont, "Brightness", -2, 2, &sld_brightness);
   create_slider(cont, "Contrast", -2, 2, &sld_contrast);
@@ -1698,10 +1698,13 @@ const char* getHtmlUI() {
     <div id="msg"></div>
     <script>
         const cfg = [
-            { id: 'framesize', n: 'Frame Size', t: 'num', min: 0, max: 13 },
+            { id: 'framesize', n: 'Capture Framesize', t: 'num', min: 0, max: 21 },
+            { id: 'stream_framesize', n: 'Stream Framesize', t: 'num', min: 0, max: 21 },
             { id: 'quality', n: 'Quality', t: 'range', min: 0, max: 63 },
             { id: 'brightness', n: 'Brightness', t: 'range', min: -2, max: 2 },
             { id: 'contrast', n: 'Contrast', t: 'range', min: -2, max: 2 },
+            { id: 'saturation', n: 'Saturation', t: 'range', min: -2, max: 2 },
+            { id: 'led_intensity', n: 'LED Flash', t: 'range', min: 0, max: 255 },
             { id: 'awb', n: 'Auto White Balance', t: 'tog' },
             { id: 'aec', n: 'Auto Exposure', t: 'tog' },
             { id: 'agc', n: 'Auto Gain', t: 'tog' },
