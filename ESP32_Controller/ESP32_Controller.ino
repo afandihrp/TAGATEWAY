@@ -134,15 +134,21 @@ bool capture_requested_multi = false;
 uint32_t notify_done_time = 0;
 bool ip_reloaded = false;
 uint32_t ip_notify_time = 0;
+bool is_streaming = false;
 
 HTTPClient http;
+WiFiClient streamClient;
 WebServer server(80);
 
 // Image buffer management
 uint8_t* imageBuffer = nullptr;
 size_t imageBufferSize = 0;
 // Reduced for standard ESP32 internal RAM (Internal is ~320KB total)
-const size_t MAX_IMAGE_SIZE = 128 * 1024; 
+const size_t MAX_IMAGE_SIZE = 64 * 1024; 
+
+// Stream buffer
+uint8_t* streamBuf = nullptr;
+const size_t STREAM_BUF_SIZE = 35000;
 
 // Function declarations
 void connectToWiFi();
@@ -175,6 +181,13 @@ void switchScreen(int scr_id);
 void captureMultiImage();
 void handleCaptureMulti();
 void displayMultiImageOrText();
+bool connectToStream();
+void stopStream();
+void processStream();
+String streamReadLine(uint32_t timeoutMs = 2000);
+bool streamReadExact(uint8_t* dst, size_t len, uint32_t timeoutMs = 5000);
+void skipStreamHeaders();
+size_t readStreamFrame();
 
 // Simple JSON value extractor
 int getJsonVal(String json, String key) {
@@ -245,7 +258,7 @@ void setup() {
   lv_init();
   
   // Allocate LVGL draw buffer
-  size_t buf_lines = 20; // Reduced lines to save RAM
+  size_t buf_lines = 10; // Reduced lines to save RAM
   size_t buf_size = screenWidth * buf_lines; 
   if (psramFound()) {
     buf = (lv_color_t *)heap_caps_malloc(buf_size * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
@@ -260,6 +273,14 @@ void setup() {
   } else {
     Serial.println("FATAL: LVGL Buffer allocation failed!");
   }
+
+  // Allocate Stream Buffer
+  if (psramFound()) {
+    streamBuf = (uint8_t*)heap_caps_malloc(STREAM_BUF_SIZE, MALLOC_CAP_SPIRAM);
+  } else {
+    streamBuf = (uint8_t*)malloc(STREAM_BUF_SIZE);
+  }
+  if (!streamBuf) Serial.println("FATAL: Stream buffer allocation failed!");
 
   static lv_disp_drv_t disp_drv;
   lv_disp_drv_init(&disp_drv);
@@ -437,14 +458,20 @@ void loop() {
         } else if (x > screenWidth - 45 && y > 100 && y < 220) {
           switchScreen(2); // Right to Stats
         } else if (x > 60 && x < screenWidth - 60) {
-          capture_requested_multi = true;
-          lv_label_set_text(label_notify_multi, "Capturing...");
-          lv_timer_handler();
+          if (!is_streaming) {
+            capture_requested_multi = true;
+            lv_label_set_text(label_notify_multi, "Capturing...");
+            lv_timer_handler();
+          }
         }
       }
     }
   }
   was_touched = is_touched;
+
+  if (current_screen == 4 && is_streaming) {
+    processStream();
+  }
 
   if (capture_requested) {
     capture_requested = false;
@@ -498,6 +525,10 @@ void updateRAMUsage() {
 }
 
 void switchScreen(int scr_id) {
+  if (current_screen == 4 && scr_id != 4) {
+    stopStream();
+  }
+  
   current_screen = scr_id;
   if (scr_id == 0) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
@@ -548,6 +579,10 @@ void switchScreen(int scr_id) {
     
     lv_label_set_text(label_select_ip, multiTargetIP.c_str());
     lv_scr_load(scr_multi);
+    
+    if (is_streaming) {
+      connectToStream();
+    }
     
     uint32_t t = millis();
     while (millis() - t < 50) {
@@ -1461,8 +1496,8 @@ void buildIpSelectScreen() {
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
   };
 
-  add_hdr_col(row_hdr, "IP Address", 240);
-  add_hdr_col(row_hdr, "Action", 100);
+  add_hdr_col(row_hdr, "IP Address", 200);
+  add_hdr_col(row_hdr, "Sel | Stream", 140);
 
   // Rows
   for (int i = 0; i < 5; i++) {
@@ -1479,28 +1514,42 @@ void buildIpSelectScreen() {
       lv_obj_t * lbl_ip = lv_label_create(row);
       lv_label_set_text(lbl_ip, devices[i].ip.c_str());
       lv_obj_set_style_text_color(lbl_ip, lv_color_white(), 0);
-      lv_obj_set_width(lbl_ip, 240);
+      lv_obj_set_width(lbl_ip, 200);
       lv_obj_set_style_text_align(lbl_ip, LV_TEXT_ALIGN_CENTER, 0);
 
       lv_obj_t * btn_sel = lv_btn_create(row);
-      lv_obj_set_size(btn_sel, 80, 30);
+      lv_obj_set_size(btn_sel, 65, 30);
       lv_obj_set_style_bg_color(btn_sel, lv_palette_main(LV_PALETTE_BLUE), 0);
       lv_obj_t * lbl_btn = lv_label_create(btn_sel);
-      lv_label_set_text(lbl_btn, "SELECT");
+      lv_label_set_text(lbl_btn, "SEL");
       lv_obj_center(lbl_btn);
 
-      // Store IP in user_data or capture in lambda
-      String target_ip = devices[i].ip;
+      lv_obj_set_user_data(btn_sel, (void*)devices[i].ip.c_str());
       lv_obj_add_event_cb(btn_sel, [](lv_event_t *e) {
-        lv_obj_t * target_lbl = (lv_obj_t *)lv_event_get_user_data(e);
         const char * ip = (const char *)lv_obj_get_user_data(lv_event_get_target(e));
         multiTargetIP = String(ip);
+        is_streaming = false;
         switchScreen(4);
       }, LV_EVENT_CLICKED, NULL);
-      // We need a way to pass the string. For simplicity, we can use a static array of strings or capture it if the compiler allows.
-      // But LVGL callbacks are usually static. Let's use lv_obj_set_user_data.
-      // Note: we need to be careful with string lifetimes. Since devices[i].ip is a global String array, we can use its c_str().
-      lv_obj_set_user_data(btn_sel, (void*)devices[i].ip.c_str());
+
+      lv_obj_t * btn_stream = lv_btn_create(row);
+      lv_obj_set_size(btn_stream, 65, 30);
+      if (is_streaming && multiTargetIP == devices[i].ip) {
+        lv_obj_set_style_bg_color(btn_stream, lv_palette_main(LV_PALETTE_GREEN), 0);
+      } else {
+        lv_obj_set_style_bg_color(btn_stream, lv_palette_main(LV_PALETTE_GREY), 0);
+      }
+      lv_obj_t * lbl_strm = lv_label_create(btn_stream);
+      lv_label_set_text(lbl_strm, "STRM");
+      lv_obj_center(lbl_strm);
+
+      lv_obj_set_user_data(btn_stream, (void*)devices[i].ip.c_str());
+      lv_obj_add_event_cb(btn_stream, [](lv_event_t *e) {
+        const char * ip = (const char *)lv_obj_get_user_data(lv_event_get_target(e));
+        multiTargetIP = String(ip);
+        is_streaming = !is_streaming;
+        switchScreen(4);
+      }, LV_EVENT_CLICKED, NULL);
     }
   }
 }
@@ -1641,4 +1690,135 @@ const char* getHtmlUI() {
 </body>
 </html>
 )rawliteral";
+}
+
+// ==========================================
+// Stream Management Functions
+// ==========================================
+
+String streamReadLine(uint32_t timeoutMs) {
+  String s;
+  s.reserve(64);
+  uint32_t deadline = millis() + timeoutMs;
+  while (millis() < deadline) {
+    if (streamClient.available()) {
+      char c = (char)streamClient.read();
+      if (c == '\n') break;
+      if (c != '\r') s += c;
+      deadline = millis() + timeoutMs;
+    }
+  }
+  return s;
+}
+
+bool streamReadExact(uint8_t* dst, size_t len, uint32_t timeoutMs) {
+  size_t got = 0;
+  uint32_t deadline = millis() + timeoutMs;
+  while (got < len && millis() < deadline) {
+    int avail = streamClient.available();
+    if (avail > 0) {
+      size_t take = min((size_t)avail, len - got);
+      streamClient.readBytes(dst + got, take);
+      got += take;
+      deadline = millis() + timeoutMs;
+    }
+  }
+  return got == len;
+}
+
+void skipStreamHeaders() {
+  while (streamClient.connected()) {
+    if (streamReadLine().length() == 0) break;
+  }
+}
+
+bool connectToStream() {
+  streamClient.stop();
+  if (multiTargetIP == "Select IP") return false;
+
+  Serial.printf("Connecting to stream: %s:81\n", multiTargetIP.c_str());
+  if (!streamClient.connect(multiTargetIP.c_str(), 81)) {
+    Serial.println("Stream connection failed");
+    return false;
+  }
+
+  streamClient.setNoDelay(true);
+  streamClient.printf(
+    "GET /stream HTTP/1.1\r\n"
+    "Host: %s:81\r\n"
+    "Connection: keep-alive\r\n"
+    "\r\n",
+    multiTargetIP.c_str());
+
+  uint32_t t = millis();
+  while (!streamClient.available()) {
+    if (millis() - t > 5000) return false;
+    delay(1);
+  }
+
+  skipStreamHeaders();
+  Serial.println("Stream started");
+  return true;
+}
+
+void stopStream() {
+  streamClient.stop();
+  Serial.println("Stream stopped");
+}
+
+size_t readStreamFrame() {
+  size_t total = 0;
+  while (streamClient.connected()) {
+    String sizeLine = streamReadLine();
+    sizeLine.trim();
+    if (sizeLine.length() == 0) continue;
+
+    size_t chunkSize = strtoul(sizeLine.c_str(), nullptr, 16);
+    if (chunkSize == 0) { streamReadLine(); break; }
+
+    if (total + chunkSize > STREAM_BUF_SIZE) return 0;
+    if (!streamReadExact(streamBuf + total, chunkSize)) return 0;
+
+    total += chunkSize;
+    streamReadLine(); // trailing CRLF
+
+    if (total >= 2 && streamBuf[total - 2] == 0xFF && streamBuf[total - 1] == 0xD9) break;
+  }
+  return total;
+}
+
+void processStream() {
+  if (!streamClient.connected()) return;
+
+  if (streamClient.available()) {
+    String line = streamReadLine(50);
+    line.trim();
+    if (line.length() == 0) return;
+
+    if (!line.startsWith("--")) {
+      unsigned long maybeSize = strtoul(line.c_str(), nullptr, 16);
+      if (maybeSize > 0 && maybeSize < 256) {
+        line = streamReadLine(50);
+        line.trim();
+      }
+      if (!line.startsWith("--")) return;
+    }
+
+    skipStreamHeaders();
+    size_t frameLen = readStreamFrame();
+    if (frameLen < 4) return;
+
+    uint8_t* jpegStart = streamBuf;
+    size_t jpegLen = frameLen;
+    for (size_t i = 0; i < frameLen - 1; i++) {
+      if (streamBuf[i] == 0xFF && streamBuf[i + 1] == 0xD8) {
+        jpegStart = streamBuf + i;
+        jpegLen = frameLen - i;
+        break;
+      }
+    }
+
+    tft.drawJpg(jpegStart, jpegLen, 0, 30, screenWidth, screenHeight - 30, 0, 0, JPEG_DIV_NONE);
+    lv_obj_invalidate(top_panel_multi);
+  }
 }
