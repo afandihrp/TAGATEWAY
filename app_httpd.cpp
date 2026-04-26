@@ -34,9 +34,9 @@
 int led_duty = 0;
 bool isStreaming = false;
 
-static int locked_stream_res = -1;
-static bool stream_res_locked = false;
-static int general_res = -1;
+static int locked_stream_res = 9;
+static bool stream_res_locked = true;
+static int general_res = 11;
 
 #endif
 
