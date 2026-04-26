@@ -421,7 +421,7 @@ static int print_reg(char *p, char *end, sensor_t *s, uint16_t reg, uint32_t mas
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
-  static char json_response[1024];
+  static char json_response[2048];
 
   sensor_t *s = esp_camera_sensor_get();
   char *p = json_response;
@@ -489,6 +489,22 @@ static esp_err_t status_handler(httpd_req_t *req) {
 #else
   p += snprintf(p, end - p, ",\"led_intensity\":%d", -1);
 #endif
+
+  // Dynamic limits and resolution list
+  const char *res_names[] = {"96x96","160x120","128x128","176x144","240x176","240x240","320x240","320x320","400x296","480x320","640x480","800x600","1024x768","1280x720","1280x1024","1600x1200","1920x1080","720x1280","864x1536","2048x1536","2560x1440","2560x1600","1080x1920","2560x1920"};
+  int fs_max = 11; // Default for internal RAM (SVGA)
+  if (psramFound()) {
+    if (s->id.PID == OV5640_PID) fs_max = 23;
+    else if (s->id.PID == OV3660_PID) fs_max = 19;
+    else fs_max = 15; // OV2640 UXGA
+  }
+
+  p += snprintf(p, end - p, ",\"quality_min\":0,\"quality_max\":63,\"brightness_min\":-2,\"brightness_max\":2,\"contrast_min\":-2,\"contrast_max\":2,\"saturation_min\":-2,\"saturation_max\":2,\"framesize_min\":0,\"framesize_max\":%d,\"resolutions\":[", fs_max);
+  for (int i = 0; i <= fs_max; i++) {
+    p += snprintf(p, end - p, "%s\"%s\"", (i == 0) ? "" : ",", res_names[i]);
+  }
+  p += snprintf(p, end - p, "]");
+
   *p++ = '}';
   *p++ = 0;
   httpd_resp_set_type(req, "application/json");

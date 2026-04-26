@@ -115,6 +115,7 @@ lv_obj_t * sld_brightness;
 lv_obj_t * sld_contrast;
 lv_obj_t * sld_saturation;
 lv_obj_t * sld_framesize;
+lv_obj_t * sld_led;
 lv_obj_t * sw_awb;
 lv_obj_t * sw_aec;
 lv_obj_t * sw_agc;
@@ -128,6 +129,7 @@ String multiTargetIP = "Select IP";
 String lastGlobalIP = "";
 int lastImgW = 0;
 int lastImgH = 0;
+String res_names_config[30];
 bool toggleHeader = false;
 bool capture_requested = false;
 bool capture_requested_multi = false;
@@ -610,13 +612,56 @@ void fetchAndApplyConfig() {
   int code = http.GET();
   if (code == 200) {
     String json = http.getString();
+    
+    // Parse Resolutions array
+    int resIdx = json.indexOf("\"resolutions\":[");
+    if (resIdx != -1) {
+      resIdx += 15;
+      int endRes = json.indexOf("]", resIdx);
+      String resStr = json.substring(resIdx, endRes);
+      for (int i = 0; i < 30; i++) res_names_config[i] = "";
+      int count = 0;
+      int startQuote = -1;
+      for (size_t i = 0; i < resStr.length(); i++) {
+        if (resStr[i] == '\"') {
+          if (startQuote == -1) startQuote = i + 1;
+          else {
+            res_names_config[count++] = resStr.substring(startQuote, i);
+            startQuote = -1;
+            if (count >= 30) break;
+          }
+        }
+      }
+    }
+
     auto setSld = [&](lv_obj_t* sld, String key) {
       int val = getJsonVal(json, key);
+      int minV = getJsonVal(json, key + "_min");
+      int maxV = getJsonVal(json, key + "_max");
+      
+      if (minV != -999 && maxV != -999) {
+        lv_slider_set_range(sld, minV, maxV);
+      }
+
       if (val != -999) {
         lv_slider_set_value(sld, val, LV_ANIM_OFF);
         lv_event_send(sld, LV_EVENT_VALUE_CHANGED, NULL);
       }
     };
+
+    setSld(sld_framesize, "framesize");
+    setSld(sld_quality, "quality");
+    setSld(sld_brightness, "brightness");
+    setSld(sld_contrast, "contrast");
+    setSld(sld_saturation, "saturation");
+    
+    // LED Slider (not necessarily in status with min/max, but let's update value)
+    int ledVal = getJsonVal(json, "led_intensity");
+    if (ledVal != -999 && ledVal != -1) {
+      lv_slider_set_value(sld_led, ledVal, LV_ANIM_OFF);
+      lv_event_send(sld_led, LV_EVENT_VALUE_CHANGED, NULL);
+    }
+
     auto setSw = [&](lv_obj_t* sw, String key) {
       int val = getJsonVal(json, key);
       if (val != -999) {
@@ -624,11 +669,7 @@ void fetchAndApplyConfig() {
         else lv_obj_clear_state(sw, LV_STATE_CHECKED);
       }
     };
-    setSld(sld_framesize, "framesize");
-    setSld(sld_quality, "quality");
-    setSld(sld_brightness, "brightness");
-    setSld(sld_contrast, "contrast");
-    setSld(sld_saturation, "saturation");
+
     setSw(sw_awb, "awb");
     setSw(sw_aec, "aec");
     setSw(sw_agc, "agc");
@@ -670,6 +711,7 @@ void sendConfigChanges() {
   sendVal("brightness", lv_slider_get_value(sld_brightness));
   sendVal("contrast", lv_slider_get_value(sld_contrast));
   sendVal("saturation", lv_slider_get_value(sld_saturation));
+  sendVal("led_intensity", lv_slider_get_value(sld_led));
   sendVal("awb", lv_obj_has_state(sw_awb, LV_STATE_CHECKED) ? 1 : 0);
   sendVal("aec", lv_obj_has_state(sw_aec, LV_STATE_CHECKED) ? 1 : 0);
   sendVal("agc", lv_obj_has_state(sw_agc, LV_STATE_CHECKED) ? 1 : 0);
@@ -997,7 +1039,28 @@ void buildConfigScreen() {
   create_slider(cont, "Brightness", -2, 2, &sld_brightness);
   create_slider(cont, "Contrast", -2, 2, &sld_contrast);
   create_slider(cont, "Saturation", -2, 2, &sld_saturation);
+  create_slider(cont, "LED Flash", 0, 255, &sld_led);
   
+  // Custom Callback for Framesize to show resolution string
+  lv_obj_add_event_cb(sld_framesize, [](lv_event_t * e) {
+      lv_obj_t * s = lv_event_get_target(e);
+      lv_obj_t * v = (lv_obj_t *)lv_event_get_user_data(e);
+      int idx = lv_slider_get_value(s);
+      if (idx >= 0 && idx < 30 && res_names_config[idx] != "") {
+        lv_label_set_text(v, res_names_config[idx].c_str());
+      } else {
+        lv_label_set_text_fmt(v, "%d", idx);
+      }
+  }, LV_EVENT_VALUE_CHANGED, lv_obj_get_child(lv_obj_get_parent(sld_framesize), 2));
+
+  // Custom Callback for LED Flash to show percentage
+  lv_obj_add_event_cb(sld_led, [](lv_event_t * e) {
+      lv_obj_t * s = lv_event_get_target(e);
+      lv_obj_t * v = (lv_obj_t *)lv_event_get_user_data(e);
+      int val = lv_slider_get_value(s);
+      lv_label_set_text_fmt(v, "%d%%", (val * 100) / 255);
+  }, LV_EVENT_VALUE_CHANGED, lv_obj_get_child(lv_obj_get_parent(sld_led), 2));
+
   create_switch(cont, "AWB", &sw_awb);
   create_switch(cont, "AEC", &sw_aec);
   create_switch(cont, "AGC", &sw_agc);
