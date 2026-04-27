@@ -1635,8 +1635,12 @@ void buildIpSelectScreen() {
       lv_obj_set_user_data(btn_stream, (void*)devices[i].ip.c_str());
       lv_obj_add_event_cb(btn_stream, [](lv_event_t *e) {
         const char * ip = (const char *)lv_obj_get_user_data(lv_event_get_target(e));
-        multiTargetIP = String(ip);
-        is_streaming = !is_streaming;
+        if (multiTargetIP == String(ip)) {
+          is_streaming = !is_streaming;
+        } else {
+          multiTargetIP = String(ip);
+          is_streaming = true;
+        }
         switchScreen(4);
       }, LV_EVENT_CLICKED, NULL);
     }
