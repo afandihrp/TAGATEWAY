@@ -213,6 +213,15 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   return res;
 }
 
+void flush_camera_buffers() {
+  for (int i = 0; i < 2; i++) {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb) {
+      esp_camera_fb_return(fb);
+    }
+  }
+}
+
 static esp_err_t stream_handler(httpd_req_t *req) {
   Serial.println("[LIVE LOG] CAM STREAM STARTED");
   camera_fb_t *fb = NULL;
@@ -233,6 +242,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   }
   if (s->status.framesize != stream_framesize) {
     s->set_framesize(s, (framesize_t)stream_framesize);
+    flush_camera_buffers();
   }
 
   res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
@@ -313,6 +323,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
   if (s->status.framesize != general_res) {
     s->set_framesize(s, (framesize_t)general_res);
+    flush_camera_buffers();
   }
 
   return res;
@@ -368,6 +379,7 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
       general_res = val;
       if (!isStreaming) {
         res = s->set_framesize(s, (framesize_t)val);
+        flush_camera_buffers();
       }
     }
   } else if (!strcmp(variable, "quality")) {
@@ -420,6 +432,7 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
     stream_framesize = val;
     if (isStreaming) {
       res = s->set_framesize(s, (framesize_t)val);
+      flush_camera_buffers();
     } else {
       res = 0;
     }
