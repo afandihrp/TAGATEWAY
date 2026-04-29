@@ -173,7 +173,7 @@ void freeImageBuffer();
 void captureImage(String targetIP);
 void runGlobalCapture();
 void displayImageOrText();
-void updateRAMUsage();
+void updateRAMUsage(bool force = false);
 void buildConfigScreen();
 void buildStatsScreen();
 void buildDevicesScreen();
@@ -516,9 +516,9 @@ void loop() {
   delay(5);
 }
 
-void updateRAMUsage() {
+void updateRAMUsage(bool force) {
   static uint32_t last_update = 0;
-  if (millis() - last_update > 2000) {
+  if (force || millis() - last_update > 2000) {
     last_update = millis();
     uint32_t free_h = ESP.getFreeHeap();
     uint32_t total_h = ESP.getHeapSize();
@@ -621,6 +621,7 @@ void switchScreen(int scr_id) {
     buildIpSelectScreen();
     lv_scr_load(scr_ip_select);
   }
+  updateRAMUsage(true);
 }
 
 void fetchAndApplyConfig() {
