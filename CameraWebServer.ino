@@ -19,14 +19,25 @@ String macAddress;
 WiFiUDP udp;
 const int udpPort = 8888;
 
+// PIR Sensor Configuration
+const int pirLeft = 13;
+const int pirMiddle = 15;
+const int pirRight = 14;
+
+bool lastLeft = LOW;
+bool lastMiddle = LOW;
+bool lastRight = LOW;
+
 // Servo Configuration (Pin 14)
-const int servoPin = 13;
+const int servoPin = 12;
 const int servoFreq = 50;       // 50Hz for standard servos
 const int servoResolution = 14; // 14-bit resolution (0-16383)
 
 void startCameraServer();
 void setupLedFlash();
 void registerCamera();
+void handlePIR();
+void triggerRemoteCapture(String zone);
 
 void setupServo() {
   pinMode(servoPin, OUTPUT);
@@ -158,6 +169,11 @@ void setup() {
 
   setupServo();
 
+  // Initialize PIR pins
+  pinMode(pirLeft, INPUT_PULLDOWN);
+  pinMode(pirMiddle, INPUT_PULLDOWN);
+  pinMode(pirRight, INPUT_PULLDOWN);
+
   WiFi.begin(ssid, password);
   WiFi.setSleep(false);
 
@@ -182,6 +198,7 @@ void setup() {
 
 void loop() {
   handleUDP();
+  handlePIR();
   static unsigned long lastRegister = 0;
   if (millis() - lastRegister >= 15000) {
     lastRegister = millis();
@@ -200,6 +217,45 @@ void registerCamera() {
       Serial.printf("[AUTO-REG] Code: %d\n", httpResponseCode);
     } else {
       Serial.printf("[AUTO-REG] Error: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+    http.end();
+  }
+}
+
+void handlePIR() {
+  bool curLeft = digitalRead(pirLeft);
+  bool curMiddle = digitalRead(pirMiddle);
+  bool curRight = digitalRead(pirRight);
+
+  if (curLeft == HIGH && lastLeft == LOW) {
+    triggerRemoteCapture("Left");
+  }
+  if (curMiddle == HIGH && lastMiddle == LOW) {
+    triggerRemoteCapture("Middle");
+  }
+  if (curRight == HIGH && lastRight == LOW) {
+    triggerRemoteCapture("Right");
+  }
+
+  lastLeft = curLeft;
+  lastMiddle = curMiddle;
+  lastRight = curRight;
+}
+
+void triggerRemoteCapture(String zone) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    // gateway.local is the Controller/Gateway address
+    String url = "http://gateway.local/capture?ip=" + WiFi.localIP().toString();
+    
+    Serial.printf("[PIR] Motion detected in %s zone! Requesting capture: %s\n", zone.c_str(), url.c_str());
+    
+    http.begin(url);
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      Serial.printf("[PIR] Gateway response: %d\n", httpCode);
+    } else {
+      Serial.printf("[PIR] Gateway request failed: %s\n", http.errorToString(httpCode).c_str());
     }
     http.end();
   }
