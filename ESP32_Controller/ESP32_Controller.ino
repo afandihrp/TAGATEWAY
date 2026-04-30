@@ -1366,6 +1366,7 @@ void captureImage(String targetIP) {
             int len = stream->readBytes(sharedBuffer + bytesRead, canRead);
             bytesRead += len;
           }
+          lv_timer_handler(); // Process touch while downloading
           delay(1);
         }
         
@@ -1541,6 +1542,7 @@ void captureMultiImage() {
             int len = stream->readBytes(sharedBuffer + bytesRead, canRead);
             bytesRead += len;
           }
+          lv_timer_handler(); // Process touch while downloading
           delay(1);
         }
         if (bytesRead == (size_t)contentLength) sharedBufferSize = bytesRead;
@@ -1880,6 +1882,7 @@ String streamReadLine(uint32_t timeoutMs) {
       if (c != '\r') s += c;
       deadline = millis() + timeoutMs;
     }
+    lv_timer_handler(); // Process touch/UI while waiting
   }
   return s;
 }
@@ -1895,6 +1898,7 @@ bool streamReadExact(uint8_t* dst, size_t len, uint32_t timeoutMs) {
       got += take;
       deadline = millis() + timeoutMs;
     }
+    lv_timer_handler(); // Process touch/UI while waiting
   }
   return got == len;
 }
@@ -2013,7 +2017,10 @@ void processStream() {
       
       int32_t x_off = (screenWidth - (img_w * scale)) / 2;
       int32_t y_off = 30 + (available_h - (img_h * scale)) / 2;
+      
+      lv_timer_handler(); // Pre-draw yield
       tft.drawJpg(jpegStart, jpegLen, x_off, y_off, 0, 0, 0, 0, scale, scale);
+      lv_timer_handler(); // Post-draw yield
     }
 
     lv_obj_invalidate(top_panel_multi);
