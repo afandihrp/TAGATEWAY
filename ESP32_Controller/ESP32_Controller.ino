@@ -377,7 +377,10 @@ void setup() {
     if (current_screen == 0) switchScreen(3);
     else if (current_screen == 3) switchScreen(2);
     else if (current_screen == 2) switchScreen(4);
-    else switchScreen(0);
+    else {
+      switchScreen(0);
+      displayImageOrText();
+    }
   }, LV_EVENT_CLICKED, NULL);
   lv_obj_t * lbl_l = lv_label_create(nav_btn_left);
   lv_label_set_text(lbl_l, "<");
@@ -396,7 +399,10 @@ void setup() {
     if (current_screen == 0) switchScreen(4);
     else if (current_screen == 4) switchScreen(2);
     else if (current_screen == 2) switchScreen(3);
-    else switchScreen(0);
+    else {
+      switchScreen(0);
+      displayImageOrText();
+    }
   }, LV_EVENT_CLICKED, NULL);
   lv_obj_t * lbl_r = lv_label_create(nav_btn_right);
   lv_label_set_text(lbl_r, ">");
@@ -404,6 +410,7 @@ void setup() {
   lv_obj_center(lbl_r);
 
   switchScreen(0);
+  displayImageOrText();
 
   // Connect to WiFi
   connectToWiFi();
@@ -459,6 +466,7 @@ void loop() {
       if (y > 30) {
         if (x < 45 && y > 100 && y < 220) {
           switchScreen(0); // Left to Image
+          displayImageOrText();
         } else if (x > screenWidth - 45 && y > 100 && y < 220) {
           switchScreen(2); // Right to Stats
         } else if (x > 60 && x < screenWidth - 60 && (!servo_control_active || y < screenHeight - 40)) {
@@ -561,8 +569,6 @@ void switchScreen(int scr_id) {
       lv_timer_handler();
       delay(5);
     }
-    
-    displayImageOrText();
   } else if (scr_id == 1) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
