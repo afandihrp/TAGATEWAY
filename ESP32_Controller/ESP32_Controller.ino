@@ -461,7 +461,7 @@ void loop() {
           switchScreen(0); // Left to Image
         } else if (x > screenWidth - 45 && y > 100 && y < 220) {
           switchScreen(2); // Right to Stats
-        } else if (x > 60 && x < screenWidth - 60) {
+        } else if (x > 60 && x < screenWidth - 60 && (!servo_control_active || y < screenHeight - 40)) {
           if (!is_streaming) {
             capture_requested_multi = true;
             lv_label_set_text(label_notify_multi, "Capturing...");
@@ -600,10 +600,15 @@ void switchScreen(int scr_id) {
     lv_scr_load(scr_multi);
     
     if (is_streaming) {
+      lv_obj_clear_flag(btn_servo, LV_OBJ_FLAG_HIDDEN);
       stream_paused = false;
       lv_label_set_text(label_notify_multi, "Streaming");
       connectToStream();
     } else {
+      lv_obj_add_flag(btn_servo, LV_OBJ_FLAG_HIDDEN);
+      servo_control_active = false;
+      if (panel_servo) lv_obj_add_flag(panel_servo, LV_OBJ_FLAG_HIDDEN);
+      if (btn_servo) lv_obj_set_style_bg_opa(btn_servo, LV_OPA_TRANSP, 0);
       lv_label_set_text(label_notify_multi, "Tap to capture");
     }
     
@@ -1015,6 +1020,7 @@ void buildMultiScreen() {
   lv_obj_t * lbl_srv = lv_label_create(btn_servo);
   lv_label_set_text(lbl_srv, "S");
   lv_obj_center(lbl_srv);
+  lv_obj_add_flag(btn_servo, LV_OBJ_FLAG_HIDDEN); // Hidden by default
 
   label_ram_multi = lv_label_create(top_panel_multi);
   lv_label_set_text(label_ram_multi, "RAM: --");
