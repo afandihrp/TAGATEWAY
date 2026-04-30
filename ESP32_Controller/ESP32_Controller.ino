@@ -102,6 +102,10 @@ lv_obj_t * scr_ip_select;
 lv_obj_t * btn_select_ip;
 lv_obj_t * label_select_ip;
 lv_obj_t * label_ip_title;
+lv_obj_t * btn_servo;
+lv_obj_t * panel_servo;
+lv_obj_t * sld_servo;
+lv_obj_t * label_servo_val;
 
 // Top Layer Nav Buttons & Config Notifications
 lv_obj_t * nav_btn_left;
@@ -139,6 +143,7 @@ bool ip_reloaded = false;
 uint32_t ip_notify_time = 0;
 bool is_streaming = false;
 bool stream_paused = false;
+bool servo_control_active = false;
 
 HTTPClient http;
 WiFiClient streamClient;
@@ -981,6 +986,36 @@ void buildMultiScreen() {
   lv_obj_set_style_text_font(label_select_ip, &lv_font_montserrat_14, 0);
   lv_obj_center(label_select_ip);
 
+  // Servo Button
+  btn_servo = lv_btn_create(top_panel_multi);
+  lv_obj_set_size(btn_servo, 35, 28);
+  lv_obj_align(btn_servo, LV_ALIGN_LEFT_MID, 200, 0);
+  lv_obj_set_style_bg_opa(btn_servo, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(btn_servo, 1, 0);
+  lv_obj_set_style_border_color(btn_servo, lv_color_white(), 0);
+  lv_obj_set_style_shadow_width(btn_servo, 0, 0);
+  lv_obj_add_event_cb(btn_servo, [](lv_event_t *e) {
+    servo_control_active = !servo_control_active;
+    if (servo_control_active) {
+      lv_obj_clear_flag(panel_servo, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_set_style_bg_color(btn_servo, lv_palette_main(LV_PALETTE_GREEN), 0);
+      lv_obj_set_style_bg_opa(btn_servo, LV_OPA_50, 0);
+    } else {
+      lv_obj_add_flag(panel_servo, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_set_style_bg_opa(btn_servo, LV_OPA_TRANSP, 0);
+    }
+    // Force a redraw to resize the image/stream area
+    if (is_streaming && !stream_paused) {
+      // Stream will naturally resize on next frame
+    } else {
+      displayMultiImageOrText();
+    }
+  }, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t * lbl_srv = lv_label_create(btn_servo);
+  lv_label_set_text(lbl_srv, "S");
+  lv_obj_center(lbl_srv);
+
   label_ram_multi = lv_label_create(top_panel_multi);
   lv_label_set_text(label_ram_multi, "RAM: --");
   lv_obj_set_style_text_color(label_ram_multi, lv_color_white(), 0);
@@ -999,6 +1034,33 @@ void buildMultiScreen() {
   lv_obj_set_style_border_width(body_panel_multi, 0, 0);
   lv_obj_set_style_radius(body_panel_multi, 0, 0);
   lv_obj_set_style_bg_color(body_panel_multi, lv_color_hex(0x202020), 0);
+
+  // Servo Slider Panel (Bottom)
+  panel_servo = lv_obj_create(scr_multi);
+  lv_obj_set_size(panel_servo, screenWidth, 40);
+  lv_obj_align(panel_servo, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_bg_color(panel_servo, lv_color_hex(0x303030), 0);
+  lv_obj_set_style_pad_all(panel_servo, 5, 0);
+  lv_obj_set_style_border_width(panel_servo, 0, 0);
+  lv_obj_set_style_radius(panel_servo, 0, 0);
+  lv_obj_add_flag(panel_servo, LV_OBJ_FLAG_HIDDEN); // Hidden by default
+
+  sld_servo = lv_slider_create(panel_servo);
+  lv_obj_set_size(sld_servo, 400, 15);
+  lv_obj_align(sld_servo, LV_ALIGN_CENTER, -20, 0);
+  lv_slider_set_range(sld_servo, 0, 180);
+  lv_slider_set_value(sld_servo, 90, LV_ANIM_OFF);
+
+  label_servo_val = lv_label_create(panel_servo);
+  lv_label_set_text(label_servo_val, "90°");
+  lv_obj_set_style_text_color(label_servo_val, lv_color_white(), 0);
+  lv_obj_align(label_servo_val, LV_ALIGN_RIGHT_MID, 0, 0);
+
+  lv_obj_add_event_cb(sld_servo, [](lv_event_t *e) {
+    int val = lv_slider_get_value(lv_event_get_target(e));
+    lv_label_set_text_fmt(label_servo_val, "%d°", val);
+    // Dummy: Serial.printf("Servo value: %d\n", val);
+  }, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
 void buildConfigScreen() {
@@ -1468,17 +1530,20 @@ void captureMultiImage() {
 
 void displayMultiImageOrText() {
   if (current_screen != 4) return;
+  
+  int available_h = screenHeight - 30 - (servo_control_active ? 40 : 0);
   tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
+  
   if (sharedBuffer && sharedBufferSize > 0) {
     uint16_t img_w = 0, img_h = 0;
     float scale = 1.0f;
     if (getJpgSize(sharedBuffer, sharedBufferSize, &img_w, &img_h)) {
       float ratio_w = (float)screenWidth / img_w;
-      float ratio_h = (float)(screenHeight - 30) / img_h;
+      float ratio_h = (float)available_h / img_h;
       scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
     }
     int32_t x_off = (screenWidth - (img_w * scale)) / 2;
-    int32_t y_off = 30 + ((screenHeight - 30) - (img_h * scale)) / 2;
+    int32_t y_off = 30 + (available_h - (img_h * scale)) / 2;
     tft.drawJpg(sharedBuffer, sharedBufferSize, x_off, y_off, 0, 0, 0, 0, scale, scale);
   }
   lv_obj_invalidate(top_panel_multi);
@@ -1877,6 +1942,7 @@ void processStream() {
 
   static uint16_t last_stream_w = 0;
   static uint16_t last_stream_h = 0;
+  static bool last_servo_state = false;
 
   if (streamClient.available()) {
     String line = streamReadLine(50);
@@ -1908,22 +1974,26 @@ void processStream() {
 
     uint16_t img_w = 0, img_h = 0;
     float scale = 1.0f;
+    int available_h = screenHeight - 30 - (servo_control_active ? 40 : 0);
+
     if (getJpgSize(jpegStart, jpegLen, &img_w, &img_h)) {
-      if (img_w != last_stream_w || img_h != last_stream_h) {
+      if (img_w != last_stream_w || img_h != last_stream_h || servo_control_active != last_servo_state) {
         last_stream_w = img_w;
         last_stream_h = img_h;
+        last_servo_state = servo_control_active;
         tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
       }
       
       float ratio_w = (float)screenWidth / img_w;
-      float ratio_h = (float)(screenHeight - 30) / img_h;
+      float ratio_h = (float)available_h / img_h;
       scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
       
       int32_t x_off = (screenWidth - (img_w * scale)) / 2;
-      int32_t y_off = 30 + ((screenHeight - 30) - (img_h * scale)) / 2;
+      int32_t y_off = 30 + (available_h - (img_h * scale)) / 2;
       tft.drawJpg(jpegStart, jpegLen, x_off, y_off, 0, 0, 0, 0, scale, scale);
     }
 
     lv_obj_invalidate(top_panel_multi);
+    if (servo_control_active) lv_obj_invalidate(panel_servo);
   }
 }
