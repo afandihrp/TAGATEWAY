@@ -19,15 +19,49 @@ String macAddress;
 WiFiUDP udp;
 const int udpPort = 8888;
 
+// Servo Configuration (Pin 14)
+const int servoPin = 13;
+const int servoFreq = 50;       // 50Hz for standard servos
+const int servoResolution = 14; // 14-bit resolution (0-16383)
+
 void startCameraServer();
 void setupLedFlash();
 void registerCamera();
+
+void setupServo() {
+  pinMode(servoPin, OUTPUT);
+  digitalWrite(servoPin, LOW);
+  
+  if (ledcAttach(servoPin, servoFreq, servoResolution) == 0) {
+    Serial.println("[ERROR] Servo PWM initialization failed!");
+  } else {
+    Serial.println("[OK] Servo initialized on Pin 14");
+    // Boot-up wiggle test: 0 -> 90 -> 0
+    moveServo(0);
+    delay(300);
+    moveServo(90);
+    delay(300);
+    moveServo(0);
+  }
+}
+
+void moveServo(int degree) {
+  // Constrain degree to 0-180 just in case
+  degree = constrain(degree, 0, 180);
+  
+  // Standard servos: 500us to 2400us pulses
+  // 500us  / 20000us * 16384 = 410
+  // 2400us / 20000us * 16384 = 1966
+  int duty = map(degree, 0, 180, 410, 1966);
+  ledcWrite(servoPin, duty);
+}
 
 void handleUDP() {
   int packetSize = udp.parsePacket();
   if (packetSize) {
     uint8_t degree = udp.read();
     Serial.printf("[UDP] Servo Degree: %d\n", degree);
+    moveServo(degree);
   }
 }
 
@@ -121,6 +155,8 @@ void setup() {
 #if defined(LED_GPIO_NUM)
   setupLedFlash();
 #endif
+
+  setupServo();
 
   WiFi.begin(ssid, password);
   WiFi.setSleep(false);
