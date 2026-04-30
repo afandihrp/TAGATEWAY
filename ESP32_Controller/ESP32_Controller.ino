@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
@@ -147,7 +148,10 @@ bool servo_control_active = false;
 
 HTTPClient http;
 WiFiClient streamClient;
+WiFiUDP udp;
 WebServer server(80);
+uint32_t last_udp_send_time = 0;
+const int udpPort = 8888;
 
 // Shared buffer for both still images and video stream
 uint8_t* sharedBuffer = nullptr;
@@ -1071,7 +1075,14 @@ void buildMultiScreen() {
   lv_obj_add_event_cb(sld_servo, [](lv_event_t *e) {
     int val = lv_slider_get_value(lv_event_get_target(e));
     lv_label_set_text_fmt(label_servo_val, "%d°", val);
-    // Dummy: Serial.printf("Servo value: %d\n", val);
+    
+    // Throttled UDP Send (every 50ms)
+    if (millis() - last_udp_send_time > 50 && multiTargetIP != "Select IP") {
+      last_udp_send_time = millis();
+      udp.beginPacket(multiTargetIP.c_str(), udpPort);
+      udp.write((uint8_t)val);
+      udp.endPacket();
+    }
   }, LV_EVENT_VALUE_CHANGED, NULL);
 }
 

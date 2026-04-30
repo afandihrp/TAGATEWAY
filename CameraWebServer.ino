@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <HTTPClient.h>
 
 // ===========================
@@ -15,10 +16,20 @@ const char *ssid = "BatuKhan";
 const char *password = "momoygemoy";
 
 String macAddress;
+WiFiUDP udp;
+const int udpPort = 8888;
 
 void startCameraServer();
 void setupLedFlash();
 void registerCamera();
+
+void handleUDP() {
+  int packetSize = udp.parsePacket();
+  if (packetSize) {
+    uint8_t degree = udp.read();
+    Serial.printf("[UDP] Servo Degree: %d\n", degree);
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -123,6 +134,7 @@ void setup() {
   Serial.println("WiFi connected");
 
   startCameraServer();
+  udp.begin(udpPort);
 
   macAddress = WiFi.macAddress();
   registerCamera();
@@ -133,6 +145,7 @@ void setup() {
 }
 
 void loop() {
+  handleUDP();
   static unsigned long lastRegister = 0;
   if (millis() - lastRegister >= 15000) {
     lastRegister = millis();
