@@ -144,15 +144,10 @@ HTTPClient http;
 WiFiClient streamClient;
 WebServer server(80);
 
-// Image buffer management
-uint8_t* imageBuffer = nullptr;
-size_t imageBufferSize = 0;
-// Reduced for standard ESP32 internal RAM (Internal is ~320KB total)
-const size_t MAX_IMAGE_SIZE = 64 * 1024; 
-
-// Stream buffer
-uint8_t* streamBuf = nullptr;
-const size_t STREAM_BUF_SIZE = 35000;
+// Shared buffer for both still images and video stream
+uint8_t* sharedBuffer = nullptr;
+size_t sharedBufferSize = 0;
+const size_t MAX_BUFFER_SIZE = 64 * 1024; // Shared limit (64KB)
 
 // Function declarations
 void connectToWiFi();
@@ -169,7 +164,7 @@ void handleStatus();
 void handleDevices();
 void handleRegister();
 const char* getHtmlUI();
-void freeImageBuffer();
+void clearSharedBuffer();
 void captureImage(String targetIP);
 void runGlobalCapture();
 void displayImageOrText();
@@ -278,13 +273,13 @@ void setup() {
     Serial.println("FATAL: LVGL Buffer allocation failed!");
   }
 
-  // Allocate Stream Buffer
+  // Allocate Shared Buffer (for images and streaming)
   if (psramFound()) {
-    streamBuf = (uint8_t*)heap_caps_malloc(STREAM_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    sharedBuffer = (uint8_t*)heap_caps_malloc(MAX_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
   } else {
-    streamBuf = (uint8_t*)malloc(STREAM_BUF_SIZE);
+    sharedBuffer = (uint8_t*)malloc(MAX_BUFFER_SIZE);
   }
-  if (!streamBuf) Serial.println("FATAL: Stream buffer allocation failed!");
+  if (!sharedBuffer) Serial.println("FATAL: Shared buffer allocation failed!");
 
   static lv_disp_drv_t disp_drv;
   lv_disp_drv_init(&disp_drv);
@@ -566,26 +561,26 @@ void switchScreen(int scr_id) {
   } else if (scr_id == 1) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    freeImageBuffer(); // Clear current image from RAM when switching to config
+    clearSharedBuffer(); // Clear current image from RAM when switching to config
     lv_label_set_text(label_config_ip, configTargetIP.c_str());
     lv_scr_load(scr_config);
     fetchAndApplyConfig();
   } else if (scr_id == 2) {
     lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    freeImageBuffer();
+    clearSharedBuffer();
     lv_scr_load(scr_stats);
   } else if (scr_id == 3) {
     lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    freeImageBuffer();
+    clearSharedBuffer();
     lv_obj_clean(scr_devices); // Clear old table
     buildDevicesScreen();     // Re-render with new data
     lv_scr_load(scr_devices);
   } else if (scr_id == 4) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    freeImageBuffer();
+    clearSharedBuffer();
     
     if (multiTargetIP == "Select IP") {
       for (int i = 0; i < 5; i++) {
@@ -616,7 +611,7 @@ void switchScreen(int scr_id) {
   } else if (scr_id == 5) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    freeImageBuffer();
+    clearSharedBuffer();
     lv_obj_clean(scr_ip_select);
     buildIpSelectScreen();
     lv_scr_load(scr_ip_select);
@@ -1255,17 +1250,16 @@ void handleXCLK() {
   server.send(200, "application/json", "{\"status\": \"ok\"}");
 }
 
-void freeImageBuffer() {
-  if (imageBuffer != nullptr) {
-    heap_caps_free(imageBuffer);
-    imageBuffer = nullptr;
-    imageBufferSize = 0;
+void clearSharedBuffer() {
+  sharedBufferSize = 0;
+  if (sharedBuffer != nullptr) {
+    memset(sharedBuffer, 0, 16); // Wipe the first few bytes (JPEG header area)
   }
 }
 
 void captureImage(String targetIP) {
   if (WiFi.status() != WL_CONNECTED) return;
-  freeImageBuffer();
+  clearSharedBuffer();
   
   String url = "http://" + targetIP + "/capture";
   http.begin(url);
@@ -1276,35 +1270,30 @@ void captureImage(String targetIP) {
     int contentLength = http.getSize();
     WiFiClient* stream = http.getStreamPtr();
     
-    if (contentLength > 0 && contentLength <= MAX_IMAGE_SIZE) {
-      if (psramFound()) {
-        imageBuffer = (uint8_t*)heap_caps_malloc(contentLength, MALLOC_CAP_SPIRAM);
-      } else {
-        imageBuffer = (uint8_t*)malloc(contentLength);
-      }
-      
-      if (imageBuffer) {
+    if (contentLength > 0 && contentLength <= MAX_BUFFER_SIZE) {
+      if (sharedBuffer) {
         size_t bytesRead = 0;
         unsigned long start = millis();
         // 5 second total download timeout
-        while (http.connected() && bytesRead < contentLength && (millis() - start < 5000)) {
+        while (http.connected() && bytesRead < (size_t)contentLength && (millis() - start < 5000)) {
           if (stream->available()) {
-            int len = stream->readBytes(imageBuffer + bytesRead, stream->available());
+            int canRead = min((int)stream->available(), (int)(MAX_BUFFER_SIZE - bytesRead));
+            int len = stream->readBytes(sharedBuffer + bytesRead, canRead);
             bytesRead += len;
           }
           delay(1);
         }
         
         if (bytesRead == (size_t)contentLength) {
-          imageBufferSize = bytesRead;
+          sharedBufferSize = bytesRead;
           uint16_t w=0, h=0;
-          if (getJpgSize(imageBuffer, imageBufferSize, &w, &h)) {
+          if (getJpgSize(sharedBuffer, sharedBufferSize, &w, &h)) {
             lastImgW = w;
             lastImgH = h;
           }
         } else {
           // Download incomplete or timeout
-          freeImageBuffer();
+          clearSharedBuffer();
         }
       }
     }
@@ -1322,8 +1311,8 @@ void handleCapture() {
   switchScreen(0);
   runGlobalCapture();
   
-  if (imageBuffer && imageBufferSize > 0) {
-    server.send(200, "application/json", "{\"status\": \"ok\", \"size\": " + String(imageBufferSize) + "}");
+  if (sharedBuffer && sharedBufferSize > 0) {
+    server.send(200, "application/json", "{\"status\": \"ok\", \"size\": " + String(sharedBufferSize) + "}");
   } else {
     server.send(500, "application/json", "{\"error\": \"Capture fail\"}");
   }
@@ -1335,7 +1324,7 @@ void runGlobalCapture() {
     return;
   }
   captureImage(lastGlobalIP);
-  if (imageBuffer && imageBufferSize > 0) {
+  if (sharedBuffer && sharedBufferSize > 0) {
     displayImageOrText();
     lv_label_set_text(label_status, lastGlobalIP.c_str());
     lv_label_set_text(label_notify, "Done");
@@ -1348,7 +1337,7 @@ void runGlobalCapture() {
 
 void handleCaptureMulti() {
   captureMultiImage();
-  if (imageBuffer && imageBufferSize > 0) {
+  if (sharedBuffer && sharedBufferSize > 0) {
     displayMultiImageOrText();
     lv_label_set_text(label_notify_multi, "Done");
   } else {
@@ -1359,15 +1348,15 @@ void handleCaptureMulti() {
 }
 
 void handleImage() {
-  if (imageBuffer == nullptr || imageBufferSize == 0) {
+  if (sharedBuffer == nullptr || sharedBufferSize == 0) {
     server.send(404, "application/json", "{\"error\": \"No image\"}");
     return;
   }
-  server.setContentLength(imageBufferSize);
+  server.setContentLength(sharedBufferSize);
   server.sendHeader("Content-Type", "image/jpeg");
-  for (size_t i = 0; i < imageBufferSize; i += 2048) {
-    size_t chunkLen = (i + 2048 < imageBufferSize) ? 2048 : (imageBufferSize - i);
-    server.sendContent((const char*)(imageBuffer + i), chunkLen);
+  for (size_t i = 0; i < sharedBufferSize; i += 2048) {
+    size_t chunkLen = (i + 2048 < sharedBufferSize) ? 2048 : (sharedBufferSize - i);
+    server.sendContent((const char*)(sharedBuffer + i), chunkLen);
   }
 }
 
@@ -1397,12 +1386,12 @@ void displayImageOrText() {
   // Clear the image area with dark grey before drawing to match LVGL background
   tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
 
-  if (imageBuffer && imageBufferSize > 0) {
+  if (sharedBuffer && sharedBufferSize > 0) {
     uint16_t img_w = 0, img_h = 0;
     float scale = 1.0f;
     
     // Parse JPEG header to find width and height
-    if (getJpgSize(imageBuffer, imageBufferSize, &img_w, &img_h)) {
+    if (getJpgSize(sharedBuffer, sharedBufferSize, &img_w, &img_h)) {
       // Calculate uniform scale to fit the screen
       float target_w = screenWidth;
       float target_h = screenHeight - 30; // 30 pixels reserved for top labels
@@ -1418,7 +1407,7 @@ void displayImageOrText() {
     if (y_offset < 30) y_offset = 30;
 
     // Draw scaled JPEG
-    tft.drawJpg(imageBuffer, imageBufferSize, x_offset, y_offset, 0, 0, 0, 0, scale, scale);
+    tft.drawJpg(sharedBuffer, sharedBufferSize, x_offset, y_offset, 0, 0, 0, 0, scale, scale);
     
     lv_label_set_text_fmt(label_status, "Cam: %s", lastGlobalIP.c_str());
   } else {
@@ -1448,7 +1437,7 @@ void captureMultiImage() {
   
   if (multiTargetIP == "Select IP") return;
 
-  freeImageBuffer();
+  clearSharedBuffer();
   String url = "http://" + multiTargetIP + "/capture";
   
   http.begin(url);
@@ -1457,21 +1446,20 @@ void captureMultiImage() {
   if (httpCode == 200) {
     int contentLength = http.getSize();
     WiFiClient* stream = http.getStreamPtr();
-    if (contentLength > 0 && contentLength <= MAX_IMAGE_SIZE) {
-      if (psramFound()) imageBuffer = (uint8_t*)heap_caps_malloc(contentLength, MALLOC_CAP_SPIRAM);
-      else imageBuffer = (uint8_t*)malloc(contentLength);
-      if (imageBuffer) {
+    if (contentLength > 0 && contentLength <= MAX_BUFFER_SIZE) {
+      if (sharedBuffer) {
         size_t bytesRead = 0;
         unsigned long start = millis();
-        while (http.connected() && bytesRead < contentLength && (millis() - start < 5000)) {
+        while (http.connected() && bytesRead < (size_t)contentLength && (millis() - start < 5000)) {
           if (stream->available()) {
-            int len = stream->readBytes(imageBuffer + bytesRead, stream->available());
+            int canRead = min((int)stream->available(), (int)(MAX_BUFFER_SIZE - bytesRead));
+            int len = stream->readBytes(sharedBuffer + bytesRead, canRead);
             bytesRead += len;
           }
           delay(1);
         }
-        if (bytesRead == (size_t)contentLength) imageBufferSize = bytesRead;
-        else freeImageBuffer();
+        if (bytesRead == (size_t)contentLength) sharedBufferSize = bytesRead;
+        else clearSharedBuffer();
       }
     }
   }
@@ -1481,17 +1469,17 @@ void captureMultiImage() {
 void displayMultiImageOrText() {
   if (current_screen != 4) return;
   tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
-  if (imageBuffer && imageBufferSize > 0) {
+  if (sharedBuffer && sharedBufferSize > 0) {
     uint16_t img_w = 0, img_h = 0;
     float scale = 1.0f;
-    if (getJpgSize(imageBuffer, imageBufferSize, &img_w, &img_h)) {
+    if (getJpgSize(sharedBuffer, sharedBufferSize, &img_w, &img_h)) {
       float ratio_w = (float)screenWidth / img_w;
       float ratio_h = (float)(screenHeight - 30) / img_h;
       scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
     }
     int32_t x_off = (screenWidth - (img_w * scale)) / 2;
     int32_t y_off = 30 + ((screenHeight - 30) - (img_h * scale)) / 2;
-    tft.drawJpg(imageBuffer, imageBufferSize, x_off, y_off, 0, 0, 0, 0, scale, scale);
+    tft.drawJpg(sharedBuffer, sharedBufferSize, x_off, y_off, 0, 0, 0, 0, scale, scale);
   }
   lv_obj_invalidate(top_panel_multi);
   lv_timer_handler();
@@ -1873,13 +1861,13 @@ size_t readStreamFrame() {
     size_t chunkSize = strtoul(sizeLine.c_str(), nullptr, 16);
     if (chunkSize == 0) { streamReadLine(); break; }
 
-    if (total + chunkSize > STREAM_BUF_SIZE) return 0;
-    if (!streamReadExact(streamBuf + total, chunkSize)) return 0;
+    if (total + chunkSize > MAX_BUFFER_SIZE) return 0;
+    if (!streamReadExact(sharedBuffer + total, chunkSize)) return 0;
 
     total += chunkSize;
     streamReadLine(); // trailing CRLF
 
-    if (total >= 2 && streamBuf[total - 2] == 0xFF && streamBuf[total - 1] == 0xD9) break;
+    if (total >= 2 && sharedBuffer[total - 2] == 0xFF && sharedBuffer[total - 1] == 0xD9) break;
   }
   return total;
 }
@@ -1908,11 +1896,11 @@ void processStream() {
     size_t frameLen = readStreamFrame();
     if (frameLen < 4) return;
 
-    uint8_t* jpegStart = streamBuf;
+    uint8_t* jpegStart = sharedBuffer;
     size_t jpegLen = frameLen;
     for (size_t i = 0; i < frameLen - 1; i++) {
-      if (streamBuf[i] == 0xFF && streamBuf[i + 1] == 0xD8) {
-        jpegStart = streamBuf + i;
+      if (sharedBuffer[i] == 0xFF && sharedBuffer[i + 1] == 0xD8) {
+        jpegStart = sharedBuffer + i;
         jpegLen = frameLen - i;
         break;
       }
