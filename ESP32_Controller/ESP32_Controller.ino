@@ -152,6 +152,7 @@ WiFiUDP udp;
 WebServer server(80);
 uint32_t last_udp_send_time = 0;
 const int udpPort = 8888;
+const int buzzerPin = 12;
 
 // Shared buffer for both still images and video stream
 uint8_t* sharedBuffer = nullptr;
@@ -196,6 +197,7 @@ String streamReadLine(uint32_t timeoutMs = 2000);
 bool streamReadExact(uint8_t* dst, size_t len, uint32_t timeoutMs = 5000);
 void skipStreamHeaders();
 size_t readStreamFrame();
+void playCaptureBeep();
 
 // Simple JSON value extractor
 int getJsonVal(String json, String key) {
@@ -253,6 +255,9 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
+  pinMode(buzzerPin, OUTPUT);
+  digitalWrite(buzzerPin, LOW);
+
   Serial.println("\n\nESP32 HTTP Camera Client Starting (LVGL v8)...");
   
   // Initialize Display (LovyanGFX)
@@ -1409,11 +1414,15 @@ void runGlobalCapture() {
     lv_label_set_text(label_notify, "No Camera IP");
     return;
   }
+  
+  
+  
   captureImage(lastGlobalIP);
   if (sharedBuffer && sharedBufferSize > 0) {
     displayImageOrText();
     lv_label_set_text(label_status, lastGlobalIP.c_str());
     lv_label_set_text(label_notify, "Done");
+    playCaptureBeep();
   } else {
     lv_label_set_text(label_notify, "Error");
   }
@@ -2025,5 +2034,22 @@ void processStream() {
 
     lv_obj_invalidate(top_panel_multi);
     if (servo_control_active) lv_obj_invalidate(panel_servo);
+  }
+}
+
+void playCaptureBeep() {
+  for (int i = 0; i < 2; i++) {
+    digitalWrite(buzzerPin, HIGH);
+    uint32_t start = millis();
+    while (millis() - start < 500) {
+      lv_timer_handler();
+      delay(1);
+    }
+    digitalWrite(buzzerPin, LOW);
+    start = millis();
+    while (millis() - start < 200) {
+      lv_timer_handler();
+      delay(1);
+    }
   }
 }
