@@ -635,6 +635,11 @@ void switchScreen(int scr_id) {
     clearSharedBuffer(); // Clear current image from RAM when switching to config
     lv_label_set_text(label_config_ip, configTargetIP.c_str());
     lv_scr_load(scr_config);
+    
+    // UI Sync loop to ensure screen is drawn before network call
+    uint32_t t = millis();
+    while (millis() - t < 50) { lv_timer_handler(); delay(5); }
+    
     fetchAndApplyConfig();
   } else if (scr_id == 2) {
     lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
@@ -669,6 +674,11 @@ void switchScreen(int scr_id) {
       lv_obj_clear_flag(btn_servo, LV_OBJ_FLAG_HIDDEN);
       stream_paused = false;
       lv_label_set_text(label_notify_multi, "Streaming");
+      
+      // UI Sync loop before blocking connect
+      uint32_t t = millis();
+      while (millis() - t < 50) { lv_timer_handler(); delay(5); }
+      
       connectToStream();
     } else {
       lv_obj_add_flag(btn_servo, LV_OBJ_FLAG_HIDDEN);
