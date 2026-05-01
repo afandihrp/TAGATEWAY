@@ -381,6 +381,7 @@ void setup() {
   lv_obj_set_style_border_width(top_panel, 0, 0);
   lv_obj_set_style_radius(top_panel, 0, 0);
   lv_obj_set_style_bg_color(top_panel, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+  lv_obj_clear_flag(top_panel, LV_OBJ_FLAG_SCROLLABLE);
 
   // Body Section (Image View)
   lv_obj_t * body_panel = lv_obj_create(scr_image);
@@ -884,6 +885,7 @@ void buildStatsScreen() {
   lv_obj_set_style_border_width(top_panel_stats, 0, 0);
   lv_obj_set_style_radius(top_panel_stats, 0, 0);
   lv_obj_set_style_bg_color(top_panel_stats, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+  lv_obj_clear_flag(top_panel_stats, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t * title = lv_label_create(top_panel_stats);
   lv_label_set_text(title, "Statistics Dashboard");
@@ -950,6 +952,7 @@ void buildDevicesScreen() {
   lv_obj_set_style_border_width(top_panel_dev, 0, 0);
   lv_obj_set_style_radius(top_panel_dev, 0, 0);
   lv_obj_set_style_bg_color(top_panel_dev, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+  lv_obj_clear_flag(top_panel_dev, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t * title = lv_label_create(top_panel_dev);
   lv_label_set_text(title, "List Devices");
@@ -1068,6 +1071,7 @@ void buildMultiScreen() {
   lv_obj_set_style_border_width(top_panel_multi, 0, 0);
   lv_obj_set_style_radius(top_panel_multi, 0, 0);
   lv_obj_set_style_bg_color(top_panel_multi, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+  lv_obj_clear_flag(top_panel_multi, LV_OBJ_FLAG_SCROLLABLE);
 
   // CFG Button with Cogwheel
   lv_obj_t * btn_cfg = lv_btn_create(top_panel_multi);
@@ -1199,6 +1203,7 @@ void buildConfigScreen() {
   lv_obj_set_style_border_width(top_panel_cfg, 0, 0);
   lv_obj_set_style_radius(top_panel_cfg, 0, 0);
   lv_obj_set_style_bg_color(top_panel_cfg, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+  lv_obj_clear_flag(top_panel_cfg, LV_OBJ_FLAG_SCROLLABLE);
 
   // Back Button
   lv_obj_t * btn_back_cfg = lv_btn_create(top_panel_cfg);
@@ -1703,6 +1708,7 @@ void buildIpSelectScreen() {
   lv_obj_set_style_border_width(top_panel_ip, 0, 0);
   lv_obj_set_style_radius(top_panel_ip, 0, 0);
   lv_obj_set_style_bg_color(top_panel_ip, lv_palette_main(LV_PALETTE_BLUE_GREY), 0);
+  lv_obj_clear_flag(top_panel_ip, LV_OBJ_FLAG_SCROLLABLE);
 
   // Back Button
   lv_obj_t * btn_back = lv_btn_create(top_panel_ip);
