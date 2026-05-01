@@ -107,6 +107,7 @@ lv_obj_t * btn_servo;
 lv_obj_t * panel_servo;
 lv_obj_t * sld_servo;
 lv_obj_t * label_servo_val;
+lv_obj_t * ui_wifi_bars[6][4];
 
 // Top Layer Nav Buttons & Config Notifications
 lv_obj_t * nav_btn_left;
@@ -198,6 +199,8 @@ bool streamReadExact(uint8_t* dst, size_t len, uint32_t timeoutMs = 5000);
 void skipStreamHeaders();
 size_t readStreamFrame();
 void playCaptureBeep();
+void createWiFiIcon(lv_obj_t * parent);
+void updateWiFiSignal();
 
 // Simple JSON value extractor
 int getJsonVal(String json, String key) {
@@ -249,6 +252,61 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   tft.endWrite();
 
   lv_disp_flush_ready(disp);
+}
+
+void createWiFiIcon(lv_obj_t * parent, int scr_idx) {
+  lv_obj_t * cont = lv_obj_create(parent);
+  lv_obj_set_size(cont, 40, 25);
+  lv_obj_align(cont, LV_ALIGN_RIGHT_MID, 1, -3);
+  lv_obj_set_style_bg_opa(cont, 0, 0);
+  lv_obj_set_style_border_width(cont, 0, 0);
+  lv_obj_set_style_pad_all(cont, 0, 0);
+  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+
+  for (int i = 0; i < 4; i++) {
+    ui_wifi_bars[scr_idx][i] = lv_obj_create(cont);
+    lv_obj_set_size(ui_wifi_bars[scr_idx][i], 5, 5 + (i * 5));
+    lv_obj_align(ui_wifi_bars[scr_idx][i], LV_ALIGN_BOTTOM_LEFT, i * 8, 0);
+    lv_obj_set_style_bg_color(ui_wifi_bars[scr_idx][i], lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_set_style_radius(ui_wifi_bars[scr_idx][i], 1, 0);
+    lv_obj_set_style_border_width(ui_wifi_bars[scr_idx][i], 0, 0);
+  }
+}
+
+void updateWiFiSignal() {
+  int32_t rssi = WiFi.RSSI();
+  int bars = 0;
+  lv_color_t color = lv_palette_main(LV_PALETTE_RED);
+
+  if (rssi >= -60) {
+    bars = 4;
+    color = lv_palette_main(LV_PALETTE_GREEN);
+  } else if (rssi >= -70) {
+    bars = 3;
+    color = lv_palette_main(LV_PALETTE_GREEN);
+  } else if (rssi >= -80) {
+    bars = 2;
+    color = lv_palette_main(LV_PALETTE_YELLOW);
+  } else if (rssi >= -90) {
+    bars = 1;
+    color = lv_palette_main(LV_PALETTE_RED);
+  } else {
+    bars = 0;
+    color = lv_palette_main(LV_PALETTE_RED);
+  }
+
+  for (int s = 0; s < 6; s++) {
+    if (ui_wifi_bars[s][0] == NULL) continue;
+    for (int i = 0; i < 4; i++) {
+      if (i < bars) {
+        lv_obj_set_style_bg_color(ui_wifi_bars[s][i], color, 0);
+        lv_obj_set_style_bg_opa(ui_wifi_bars[s][i], 255, 0);
+      } else {
+        lv_obj_set_style_bg_color(ui_wifi_bars[s][i], lv_palette_main(LV_PALETTE_GREY), 0);
+        lv_obj_set_style_bg_opa(ui_wifi_bars[s][i], 100, 0);
+      }
+    }
+  }
 }
 
 void setup() {
@@ -361,7 +419,9 @@ void setup() {
   label_ram = lv_label_create(top_panel);
   lv_label_set_text(label_ram, "RAM: --");
   lv_obj_set_style_text_color(label_ram, lv_color_white(), 0);
-  lv_obj_align(label_ram, LV_ALIGN_RIGHT_MID, -10, 0);
+  lv_obj_align(label_ram, LV_ALIGN_RIGHT_MID, -45, 0);
+
+  createWiFiIcon(top_panel, 0);
 
   label_notify = lv_label_create(top_panel);
   lv_label_set_text(label_notify, "Tap to capture");
@@ -540,6 +600,9 @@ void updateRAMUsage(bool force) {
     uint32_t free_h = ESP.getFreeHeap();
     uint32_t total_h = ESP.getHeapSize();
     uint32_t used_h = total_h - free_h;
+    
+    updateWiFiSignal();
+
     if (current_screen == 4) {
       lv_label_set_text_fmt(label_ram_multi, "RAM: %u/%u KB", used_h/1024, total_h/1024);
     } else if (current_screen == 2) {
@@ -826,7 +889,9 @@ void buildStatsScreen() {
   label_ram_stats = lv_label_create(top_panel_stats);
   lv_label_set_text(label_ram_stats, "RAM: --");
   lv_obj_set_style_text_color(label_ram_stats, lv_color_white(), 0);
-  lv_obj_align(label_ram_stats, LV_ALIGN_RIGHT_MID, -10, 0);
+  lv_obj_align(label_ram_stats, LV_ALIGN_RIGHT_MID, -45, 0);
+
+  createWiFiIcon(top_panel_stats, 2);
 
   // Body container (Centered, 400px)
   lv_obj_t * cont = lv_obj_create(scr_stats);
@@ -890,7 +955,9 @@ void buildDevicesScreen() {
   label_ram_devices = lv_label_create(top_panel_dev);
   lv_label_set_text(label_ram_devices, "RAM: --");
   lv_obj_set_style_text_color(label_ram_devices, lv_color_white(), 0);
-  lv_obj_align(label_ram_devices, LV_ALIGN_RIGHT_MID, -10, 0);
+  lv_obj_align(label_ram_devices, LV_ALIGN_RIGHT_MID, -45, 0);
+
+  createWiFiIcon(top_panel_dev, 3);
 
   // Body container (Centered, 400px)
   lv_obj_t * cont = lv_obj_create(scr_devices);
@@ -993,7 +1060,7 @@ void buildMultiScreen() {
 
   // Button for IP selection
   btn_select_ip = lv_btn_create(top_panel_multi);
-  lv_obj_set_size(btn_select_ip, 150, 28);
+  lv_obj_set_size(btn_select_ip, 110, 28);
   lv_obj_align(btn_select_ip, LV_ALIGN_LEFT_MID, 45, 0);
   lv_obj_set_style_bg_opa(btn_select_ip, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(btn_select_ip, 1, 0);
@@ -1009,7 +1076,7 @@ void buildMultiScreen() {
   // Servo Button
   btn_servo = lv_btn_create(top_panel_multi);
   lv_obj_set_size(btn_servo, 35, 28);
-  lv_obj_align(btn_servo, LV_ALIGN_LEFT_MID, 200, 0);
+  lv_obj_align(btn_servo, LV_ALIGN_LEFT_MID, 160, 0);
   lv_obj_set_style_bg_opa(btn_servo, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(btn_servo, 1, 0);
   lv_obj_set_style_border_color(btn_servo, lv_color_white(), 0);
@@ -1040,12 +1107,14 @@ void buildMultiScreen() {
   label_ram_multi = lv_label_create(top_panel_multi);
   lv_label_set_text(label_ram_multi, "RAM: --");
   lv_obj_set_style_text_color(label_ram_multi, lv_color_white(), 0);
-  lv_obj_align(label_ram_multi, LV_ALIGN_RIGHT_MID, -10, 0);
+  lv_obj_align(label_ram_multi, LV_ALIGN_RIGHT_MID, -45, 0);
+
+  createWiFiIcon(top_panel_multi, 4);
 
   label_notify_multi = lv_label_create(top_panel_multi);
   lv_label_set_text(label_notify_multi, "Tap to capture");
   lv_obj_set_style_text_color(label_notify_multi, lv_color_white(), 0);
-  lv_obj_align(label_notify_multi, LV_ALIGN_CENTER, 40, 0); // Shift right to avoid dropdown
+  lv_obj_align(label_notify_multi, LV_ALIGN_CENTER, 0, 0);
 
   // Body container (Image View)
   lv_obj_t * body_panel_multi = lv_obj_create(scr_multi);
