@@ -95,7 +95,6 @@ lv_obj_t * scr_multi;
 lv_obj_t * top_panel_multi;
 lv_obj_t * label_status;
 lv_obj_t * label_ram;
-lv_obj_t * label_notify;
 lv_obj_t * label_ram_multi;
 lv_obj_t * label_notify_multi;
 lv_obj_t * label_ram_stats;
@@ -425,11 +424,6 @@ void setup() {
 
   createWiFiIcon(top_panel, 0);
 
-  label_notify = lv_label_create(top_panel);
-  lv_label_set_text(label_notify, "Tap to capture");
-  lv_obj_set_style_text_color(label_notify, lv_color_white(), 0);
-  lv_obj_align(label_notify, LV_ALIGN_CENTER, 0, 0);
-
   buildConfigScreen();
   buildStatsScreen();
   buildDevicesScreen();
@@ -509,11 +503,6 @@ void loop() {
   lv_timer_handler();
   updateRAMUsage();
 
-  if (notify_done_time > 0 && millis() - notify_done_time > 2000) {
-    lv_label_set_text(label_notify, "Tap to capture");
-    notify_done_time = 0;
-  }
-
   // Polling touch
   uint16_t x, y;
   static bool was_touched = false;
@@ -526,10 +515,6 @@ void loop() {
           switchScreen(3); // Go to Devices (left)
         } else if (x > screenWidth - 45 && y > 100 && y < 220) {
           switchScreen(4); // Go to Multi Camera (right)
-        } else {
-          capture_requested = true;
-          lv_label_set_text(label_notify, "Capturing...");
-          lv_timer_handler();
         }
       }    }
   } else if (current_screen == 4) { // Multi Camera manual touch handling
@@ -578,11 +563,9 @@ void loop() {
     handleCaptureMulti();
   }
   
-  if (notify_done_time > 0 && millis() - notify_done_time > 2000) {
+  if (notify_done_time > 0 && millis() - notify_done_time > 1000) {
     if (current_screen == 4) {
       if (!is_streaming) lv_label_set_text(label_notify_multi, "Tap to capture");
-    } else {
-      lv_label_set_text(label_notify, "Tap to capture");
     }
     notify_done_time = 0;
   }
@@ -1519,20 +1502,14 @@ void handleCapture() {
 
 void runGlobalCapture() {
   if (lastGlobalIP == "") {
-    lv_label_set_text(label_notify, "No Camera IP");
     return;
   }
-  
-  
   
   captureImage(lastGlobalIP);
   if (sharedBuffer && sharedBufferSize > 0) {
     displayImageOrText();
     lv_label_set_text(label_status, lastGlobalIP.c_str());
-    lv_label_set_text(label_notify, "Done");
     playCaptureBeep();
-  } else {
-    lv_label_set_text(label_notify, "Error");
   }
   notify_done_time = millis();
   if (notify_done_time == 0) notify_done_time = 1;
