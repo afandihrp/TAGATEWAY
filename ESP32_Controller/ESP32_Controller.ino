@@ -57,6 +57,7 @@ public:
     tcfg.pin_int    = 27;
     tcfg.bus_shared = true;
     tcfg.spi_host   = VSPI_HOST;
+    tcfg.freq       = 2500000; // Optimal 2.5MHz for XPT2046
     _touch_instance.config(tcfg);
     _panel_instance.setTouch(&_touch_instance);
 
@@ -574,8 +575,6 @@ void loop() {
     if (current_screen == 5) lv_label_set_text(label_ip_title, "Select Camera IP");
     ip_notify_time = 0;
   }
-  
-  delay(5);
 }
 
 void updateRAMUsage(bool force) {
@@ -2123,9 +2122,9 @@ void processStream() {
       int32_t x_off = (screenWidth - (img_w * scale)) / 2;
       int32_t y_off = 30 + (available_h - (img_h * scale)) / 2;
       
-      lv_timer_handler(); // Pre-draw yield
+      lv_timer_handler(); // Catch touch before drawing
       tft.drawJpg(jpegStart, jpegLen, x_off, y_off, 0, 0, 0, 0, scale, scale);
-      lv_timer_handler(); // Post-draw yield
+      lv_timer_handler(); // Catch touch after drawing
     }
 
     lv_obj_invalidate(top_panel_multi);
