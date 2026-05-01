@@ -74,14 +74,15 @@ static lv_color_t *buf = nullptr;
 struct DeviceInfo {
   String mac;
   String ip;
+  int rssi;
 };
 
 DeviceInfo devices[5] = {
-  {"", ""},
-  {"", ""},
-  {"", ""},
-  {"", ""},
-  {"", ""}
+  {"", "", -100},
+  {"", "", -100},
+  {"", "", -100},
+  {"", "", -100},
+  {"", "", -100}
 };
 
 // LVGL Widgets
@@ -993,10 +994,10 @@ void buildDevicesScreen() {
   add_col(row_hdr, "No.", 30);
   add_col(row_hdr, "MAC", 150);
   add_col(row_hdr, "IP", 120);
-  add_col(row_hdr, "TEST", 60);
+  add_col(row_hdr, "SIGNAL", 60);
 
   // Dummy Data Rows
-  auto add_row = [&](int no, const char* mac, const char* ip) {
+  auto add_row = [&](int no, const char* mac, const char* ip, int rssi) {
     lv_obj_t * row = lv_obj_create(cont);
     lv_obj_set_size(row, 380, 40);
     lv_obj_set_style_bg_color(row, lv_color_hex(0x303030), 0);
@@ -1012,19 +1013,45 @@ void buildDevicesScreen() {
     add_col(row, mac, 150);
     add_col(row, ip, 120);
 
-    lv_obj_t * btn = lv_btn_create(row);
-    lv_obj_set_size(btn, 50, 25);
-    lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_BLUE), 0);
-    lv_obj_t * lbl_btn = lv_label_create(btn);
-    lv_label_set_text(lbl_btn, "PING");
-    lv_obj_set_style_text_font(lbl_btn, &lv_font_montserrat_14, 0);
-    lv_obj_center(lbl_btn);
+    // Signal Icon instead of PING button
+    lv_obj_t * sig_cont = lv_obj_create(row);
+    lv_obj_set_size(sig_cont, 50, 30);
+    lv_obj_set_style_bg_opa(sig_cont, 0, 0);
+    lv_obj_set_style_border_width(sig_cont, 0, 0);
+    lv_obj_set_style_pad_all(sig_cont, 0, 0);
+    lv_obj_clear_flag(sig_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(sig_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(sig_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_set_style_pad_column(sig_cont, 2, 0);
+    lv_obj_set_style_translate_y(sig_cont, -5, 0);
+
+    int bars = 0;
+    lv_color_t color = lv_palette_main(LV_PALETTE_RED);
+    if (rssi >= -60) { bars = 4; color = lv_palette_main(LV_PALETTE_GREEN); }
+    else if (rssi >= -70) { bars = 3; color = lv_palette_main(LV_PALETTE_GREEN); }
+    else if (rssi >= -80) { bars = 2; color = lv_palette_main(LV_PALETTE_YELLOW); }
+    else if (rssi >= -90) { bars = 1; color = lv_palette_main(LV_PALETTE_RED); }
+    else { bars = 0; color = lv_palette_main(LV_PALETTE_RED); }
+
+    for (int j = 0; j < 4; j++) {
+      lv_obj_t * b = lv_obj_create(sig_cont);
+      lv_obj_set_size(b, 4, 5 + (j * 4));
+      if (j < bars) {
+        lv_obj_set_style_bg_color(b, color, 0);
+        lv_obj_set_style_bg_opa(b, 255, 0);
+      } else {
+        lv_obj_set_style_bg_color(b, lv_palette_main(LV_PALETTE_GREY), 0);
+        lv_obj_set_style_bg_opa(b, 100, 0);
+      }
+      lv_obj_set_style_border_width(b, 0, 0);
+      lv_obj_set_style_radius(b, 1, 0);
+    }
   };
 
   int row_count = 1;
   for (int i = 0; i < 5; i++) {
     if (devices[i].mac != "" && devices[i].ip != "") {
-      add_row(row_count++, devices[i].mac.c_str(), devices[i].ip.c_str());
+      add_row(row_count++, devices[i].mac.c_str(), devices[i].ip.c_str(), devices[i].rssi);
     }
   }
 }
@@ -1352,6 +1379,8 @@ void handleRegister() {
     server.send(400, "application/json", "{\"error\": \"Missing mac\"}");
     return;
   }
+  int rssi = getJsonVal(body, "rssi");
+  if (rssi == -999) rssi = -100; // Default to weak if not provided
   
   String clientIP = server.client().remoteIP().toString();
   bool found = false;
@@ -1359,6 +1388,7 @@ void handleRegister() {
   for (int i = 0; i < 5; i++) {
     if (devices[i].mac == mac) {
       found = true;
+      devices[i].rssi = rssi;
       if (devices[i].ip != clientIP) {
         devices[i].ip = clientIP;
       }
@@ -1373,6 +1403,7 @@ void handleRegister() {
       if (devices[i].mac == "") {
         devices[i].mac = mac;
         devices[i].ip = clientIP;
+        devices[i].rssi = rssi;
         added = true;
         break;
       }

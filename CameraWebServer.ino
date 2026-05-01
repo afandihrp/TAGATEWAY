@@ -211,7 +211,7 @@ void registerCamera() {
     HTTPClient http;
     http.begin("http://gateway.local/register");
     http.addHeader("Content-Type", "application/json");
-    String payload = "{\"mac\":\"" + macAddress + "\"}";
+    String payload = "{\"mac\":\"" + macAddress + "\", \"rssi\":" + String(WiFi.RSSI()) + "}";
     int httpResponseCode = http.POST(payload);
     if (httpResponseCode > 0) {
       Serial.printf("[AUTO-REG] Code: %d\n", httpResponseCode);
