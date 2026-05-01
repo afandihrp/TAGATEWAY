@@ -609,6 +609,9 @@ void updateRAMUsage(bool force) {
     } else if (current_screen == 2) {
       lv_label_set_text_fmt(label_ram_stats, "RAM: %u/%u KB", used_h/1024, total_h/1024);
     } else if (current_screen == 3) {
+      lv_obj_clean(scr_devices);
+      buildDevicesScreen();
+      updateWiFiSignal(); // Apply colors to the newly created bars
       lv_label_set_text_fmt(label_ram_devices, "RAM: %u/%u KB", used_h/1024, total_h/1024);
     } else {
       lv_label_set_text_fmt(label_ram, "RAM: %u/%u KB", used_h/1024, total_h/1024);
