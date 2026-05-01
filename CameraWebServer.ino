@@ -228,12 +228,15 @@ void handlePIR() {
   bool curRight = digitalRead(pirRight);
 
   if (curLeft == HIGH && lastLeft == LOW) {
+    moveServo(180);
     triggerRemoteCapture("Left");
   }
   if (curMiddle == HIGH && lastMiddle == LOW) {
+    moveServo(90);
     triggerRemoteCapture("Middle");
   }
   if (curRight == HIGH && lastRight == LOW) {
+    moveServo(0);
     triggerRemoteCapture("Right");
   }
 

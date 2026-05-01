@@ -23,6 +23,8 @@
 #include "camera_index.h"
 #include "board_config.h"
 
+extern void moveServo(int degree);
+
 #if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
 #include "esp32-hal-log.h"
 #endif
@@ -210,6 +212,9 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   int64_t fr_end = esp_timer_get_time();
 #endif
   log_i("JPG: %" PRIu32 "B %" PRId32 " ms", (uint32_t)fb_len, (int32_t)((fr_end - fr_start) / 1000));
+  
+  // Reset servo to 0 degrees after capture is finished
+  moveServo(90);
   return res;
 }
 
