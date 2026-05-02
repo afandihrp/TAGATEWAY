@@ -1,5 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
 #include <WiFiUdp.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
@@ -12,6 +14,13 @@
 // WiFi Configuration
 const char* ssid = "BatuKhan";
 const char* password = "momoygemoy";
+
+// Telegram Bot Configuration
+#define BOT_TOKEN "7910361449:AAFMjzZxkDQAg1y6oeIJ0gVapBXbd2e11DU"
+const unsigned long BOT_MTBS = 3000; // mean time between scan messages (30 seconds)
+WiFiClientSecure secured_client;
+UniversalTelegramBot bot(BOT_TOKEN, secured_client);
+unsigned long bot_lasttime; // last time messages' scan has been done
 
 // Display Configuration
 static const uint32_t screenWidth  = 480; // Landscape
@@ -159,7 +168,7 @@ const int buzzerPin = 12;
 // Shared buffer for both still images and video stream
 uint8_t* sharedBuffer = nullptr;
 size_t sharedBufferSize = 0;
-const size_t MAX_BUFFER_SIZE = 64 * 1024; // Shared limit (64KB)
+const size_t MAX_BUFFER_SIZE = 32 * 1024; // Reduced to 32KB to save RAM for SSL
 
 // Function declarations
 void connectToWiFi();
@@ -307,6 +316,145 @@ void updateWiFiSignal() {
         lv_obj_set_style_bg_opa(ui_wifi_bars[s][i], 100, 0);
       }
     }
+  }
+}
+
+// Telegram Helper Functions
+void sendPhotoToTelegram(String chatId) {
+  if (sharedBuffer == nullptr || sharedBufferSize == 0) {
+    bot.sendMessage(chatId, "No image captured yet.", "");
+    return;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure(); // Disable certificate verification
+  
+  const char* host = "api.telegram.org";
+  const int port = 443;
+  
+  Serial.println("[Telegram] Connecting to upload photo...");
+  if (!client.connect(host, port)) {
+    Serial.println("[Telegram] Connection failed for photo upload");
+    bot.sendMessage(chatId, "Failed to connect to Telegram for upload.", "");
+    return;
+  }
+
+  String boundary = "----ESP32Boundary" + String(millis());
+  String head = "--" + boundary + "\r\n"
+              + "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
+              + chatId + "\r\n"
+              + "--" + boundary + "\r\n"
+              + "Content-Disposition: form-data; name=\"photo\"; filename=\"image.jpg\"\r\n"
+              + "Content-Type: image/jpeg\r\n\r\n";
+  String tail = "\r\n--" + boundary + "--\r\n";
+  
+  uint32_t contentLength = head.length() + sharedBufferSize + tail.length();
+  
+  client.println("POST /bot" + String(BOT_TOKEN) + "/sendPhoto HTTP/1.1");
+  client.println("Host: " + String(host));
+  client.println("Content-Length: " + String(contentLength));
+  client.println("Content-Type: multipart/form-data; boundary=" + boundary);
+  client.println();
+  
+  client.print(head);
+  
+  // Send image in 2KB chunks using a small internal RAM buffer
+  int chunkSize = 2048;
+  uint8_t* chunkBuffer = (uint8_t*)malloc(chunkSize);
+  
+  if (chunkBuffer != nullptr) {
+    for (size_t i = 0; i < sharedBufferSize; i += chunkSize) {
+      int currentChunkSize = min(chunkSize, (int)(sharedBufferSize - i));
+      memcpy(chunkBuffer, sharedBuffer + i, currentChunkSize);
+      client.write(chunkBuffer, currentChunkSize);
+    }
+    free(chunkBuffer);
+  } else {
+    // Fallback if internal RAM allocation fails
+    for (size_t i = 0; i < sharedBufferSize; i += chunkSize) {
+      int currentChunkSize = min(chunkSize, (int)(sharedBufferSize - i));
+      client.write(sharedBuffer + i, currentChunkSize);
+    }
+  }
+  
+  client.print(tail);
+  
+  // Read response briefly
+  unsigned long timeout = millis();
+  while (client.connected() && millis() - timeout < 5000) {
+    String line = client.readStringUntil('\n');
+    if (line == "\r") break;
+  }
+  Serial.println("[Telegram] Upload complete.");
+  client.stop();
+}
+
+void handleNewMessages(int numNewMessages) {
+  for (int i = 0; i < numNewMessages; i++) {
+    String text = bot.messages[i].text;
+    String chat_id = bot.messages[i].chat_id;
+    String from_name = bot.messages[i].from_name;
+
+    Serial.println("Telegram bot got message: " + text);
+
+    if (text == "/start") {
+      String welcome = "Welcome " + from_name + " to ESP32 Control.\n";
+      welcome += "Use /photo to list and select a camera.\n";
+      bot.sendMessage(chat_id, welcome, "");
+    } 
+    else if (text == "/photo") {
+      String list = "Select a camera to capture from:\n";
+      int count = 0;
+      for (int j = 0; j < 5; j++) {
+        if (devices[j].ip != "") {
+          list += "/cam" + String(j + 1) + " - IP: " + devices[j].ip + "\n";
+          count++;
+        }
+      }
+      if (count == 0) {
+        list = "No cameras are currently registered.";
+      }
+      bot.sendMessage(chat_id, list, "");
+    } 
+    else if (text.startsWith("/cam")) {
+      int idx = text.substring(4).toInt() - 1;
+      if (idx >= 0 && idx < 5 && devices[idx].ip != "") {
+        bot.sendMessage(chat_id, "Capturing from " + devices[idx].ip + "...", "");
+        captureImage(devices[idx].ip);
+        if (sharedBufferSize > 0) {
+          bot.sendMessage(chat_id, "Sending photo...", "");
+          sendPhotoToTelegram(chat_id);
+        } else {
+          bot.sendMessage(chat_id, "Failed to capture image.", "");
+        }
+      } else {
+        bot.sendMessage(chat_id, "Invalid camera selection.", "");
+      }
+    } else {
+      bot.sendMessage(chat_id, "Unknown command. Try /photo", "");
+    }
+  }
+}
+
+void telegramTaskCode(void * pvParameters) {
+  Serial.println("Telegram Task Started on Core 0");
+  for(;;) {
+    if (WiFi.status() == WL_CONNECTED) {
+      if (millis() - bot_lasttime > BOT_MTBS) {
+        Serial.printf("\n[Telegram] Free Heap: %d, Max Contiguous Block: %d\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+        Serial.println("[Telegram] Polling for updates...");
+        int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+        Serial.printf("[Telegram] Poll complete. Messages found: %d\n", numNewMessages);
+        
+        while(numNewMessages) {
+          Serial.println("[Telegram] Processing messages...");
+          handleNewMessages(numNewMessages);
+          numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+        }
+        bot_lasttime = millis();
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10)); // Prevent WDT resets on Core 0
   }
 }
 
@@ -1298,6 +1446,19 @@ void connectToWiFi() {
       Serial.println("mDNS responder started: http://gateway.local");
       MDNS.addService("http", "tcp", 80);
     }
+
+    // Initialize Telegram Bot and Start Core 0 Task
+    secured_client.setInsecure(); // Bypass NTP/Certificate check for stability
+    
+    xTaskCreatePinnedToCore(
+      telegramTaskCode,   /* Task function. */
+      "TelegramTask",     /* name of task. */
+      8192,               /* Stack size of task (8KB) */
+      NULL,               /* parameter of the task */
+      1,                  /* priority of the task */
+      NULL,               /* Task handle to keep track of created task */
+      1);                 /* pin task to core 0 */
+    Serial.println("Telegram Bot task started on Core 0 (Insecure Mode)");
   } else {
     lv_label_set_text(label_status, "WiFi Failed!");
   }
