@@ -1,9 +1,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <UniversalTelegramBot.h>
 #include <WiFiUdp.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <esp_heap_caps.h>
@@ -15,12 +14,9 @@
 const char* ssid = "BatuKhan";
 const char* password = "momoygemoy";
 
-// Telegram Bot Configuration
-#define BOT_TOKEN "7910361449:AAFMjzZxkDQAg1y6oeIJ0gVapBXbd2e11DU"
-const unsigned long BOT_MTBS = 3000; // mean time between scan messages (30 seconds)
-WiFiClientSecure secured_client;
-UniversalTelegramBot bot(BOT_TOKEN, secured_client);
-unsigned long bot_lasttime; // last time messages' scan has been done
+// Telegram Configuration
+const String botToken = "7910361449:AAFMjzZxkDQAg1y6oeIJ0gVapBXbd2e11DU";
+const String targetChatId = "1275988890"; // REPLACE WITH YOUR ACTUAL CHAT ID
 
 // Display Configuration
 static const uint32_t screenWidth  = 480; // Landscape
@@ -168,7 +164,8 @@ const int buzzerPin = 12;
 // Shared buffer for both still images and video stream
 uint8_t* sharedBuffer = nullptr;
 size_t sharedBufferSize = 0;
-const size_t MAX_BUFFER_SIZE = 32 * 1024; // Reduced to 32KB to save RAM for SSL
+const size_t MAX_BUFFER_SIZE = 32 * 1024; // Shared limit (64KB)
+const uint32_t CAPTURE_TIMEOUT_MS = 8000;       // 8 second timeout for picture fetching
 
 // Function declarations
 void connectToWiFi();
@@ -316,145 +313,6 @@ void updateWiFiSignal() {
         lv_obj_set_style_bg_opa(ui_wifi_bars[s][i], 100, 0);
       }
     }
-  }
-}
-
-// Telegram Helper Functions
-void sendPhotoToTelegram(String chatId) {
-  if (sharedBuffer == nullptr || sharedBufferSize == 0) {
-    bot.sendMessage(chatId, "No image captured yet.", "");
-    return;
-  }
-
-  WiFiClientSecure client;
-  client.setInsecure(); // Disable certificate verification
-  
-  const char* host = "api.telegram.org";
-  const int port = 443;
-  
-  Serial.println("[Telegram] Connecting to upload photo...");
-  if (!client.connect(host, port)) {
-    Serial.println("[Telegram] Connection failed for photo upload");
-    bot.sendMessage(chatId, "Failed to connect to Telegram for upload.", "");
-    return;
-  }
-
-  String boundary = "----ESP32Boundary" + String(millis());
-  String head = "--" + boundary + "\r\n"
-              + "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
-              + chatId + "\r\n"
-              + "--" + boundary + "\r\n"
-              + "Content-Disposition: form-data; name=\"photo\"; filename=\"image.jpg\"\r\n"
-              + "Content-Type: image/jpeg\r\n\r\n";
-  String tail = "\r\n--" + boundary + "--\r\n";
-  
-  uint32_t contentLength = head.length() + sharedBufferSize + tail.length();
-  
-  client.println("POST /bot" + String(BOT_TOKEN) + "/sendPhoto HTTP/1.1");
-  client.println("Host: " + String(host));
-  client.println("Content-Length: " + String(contentLength));
-  client.println("Content-Type: multipart/form-data; boundary=" + boundary);
-  client.println();
-  
-  client.print(head);
-  
-  // Send image in 2KB chunks using a small internal RAM buffer
-  int chunkSize = 2048;
-  uint8_t* chunkBuffer = (uint8_t*)malloc(chunkSize);
-  
-  if (chunkBuffer != nullptr) {
-    for (size_t i = 0; i < sharedBufferSize; i += chunkSize) {
-      int currentChunkSize = min(chunkSize, (int)(sharedBufferSize - i));
-      memcpy(chunkBuffer, sharedBuffer + i, currentChunkSize);
-      client.write(chunkBuffer, currentChunkSize);
-    }
-    free(chunkBuffer);
-  } else {
-    // Fallback if internal RAM allocation fails
-    for (size_t i = 0; i < sharedBufferSize; i += chunkSize) {
-      int currentChunkSize = min(chunkSize, (int)(sharedBufferSize - i));
-      client.write(sharedBuffer + i, currentChunkSize);
-    }
-  }
-  
-  client.print(tail);
-  
-  // Read response briefly
-  unsigned long timeout = millis();
-  while (client.connected() && millis() - timeout < 5000) {
-    String line = client.readStringUntil('\n');
-    if (line == "\r") break;
-  }
-  Serial.println("[Telegram] Upload complete.");
-  client.stop();
-}
-
-void handleNewMessages(int numNewMessages) {
-  for (int i = 0; i < numNewMessages; i++) {
-    String text = bot.messages[i].text;
-    String chat_id = bot.messages[i].chat_id;
-    String from_name = bot.messages[i].from_name;
-
-    Serial.println("Telegram bot got message: " + text);
-
-    if (text == "/start") {
-      String welcome = "Welcome " + from_name + " to ESP32 Control.\n";
-      welcome += "Use /photo to list and select a camera.\n";
-      bot.sendMessage(chat_id, welcome, "");
-    } 
-    else if (text == "/photo") {
-      String list = "Select a camera to capture from:\n";
-      int count = 0;
-      for (int j = 0; j < 5; j++) {
-        if (devices[j].ip != "") {
-          list += "/cam" + String(j + 1) + " - IP: " + devices[j].ip + "\n";
-          count++;
-        }
-      }
-      if (count == 0) {
-        list = "No cameras are currently registered.";
-      }
-      bot.sendMessage(chat_id, list, "");
-    } 
-    else if (text.startsWith("/cam")) {
-      int idx = text.substring(4).toInt() - 1;
-      if (idx >= 0 && idx < 5 && devices[idx].ip != "") {
-        bot.sendMessage(chat_id, "Capturing from " + devices[idx].ip + "...", "");
-        captureImage(devices[idx].ip);
-        if (sharedBufferSize > 0) {
-          bot.sendMessage(chat_id, "Sending photo...", "");
-          sendPhotoToTelegram(chat_id);
-        } else {
-          bot.sendMessage(chat_id, "Failed to capture image.", "");
-        }
-      } else {
-        bot.sendMessage(chat_id, "Invalid camera selection.", "");
-      }
-    } else {
-      bot.sendMessage(chat_id, "Unknown command. Try /photo", "");
-    }
-  }
-}
-
-void telegramTaskCode(void * pvParameters) {
-  Serial.println("Telegram Task Started on Core 0");
-  for(;;) {
-    if (WiFi.status() == WL_CONNECTED) {
-      if (millis() - bot_lasttime > BOT_MTBS) {
-        Serial.printf("\n[Telegram] Free Heap: %d, Max Contiguous Block: %d\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-        Serial.println("[Telegram] Polling for updates...");
-        int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-        Serial.printf("[Telegram] Poll complete. Messages found: %d\n", numNewMessages);
-        
-        while(numNewMessages) {
-          Serial.println("[Telegram] Processing messages...");
-          handleNewMessages(numNewMessages);
-          numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-        }
-        bot_lasttime = millis();
-      }
-    }
-    vTaskDelay(pdMS_TO_TICKS(10)); // Prevent WDT resets on Core 0
   }
 }
 
@@ -1446,19 +1304,6 @@ void connectToWiFi() {
       Serial.println("mDNS responder started: http://gateway.local");
       MDNS.addService("http", "tcp", 80);
     }
-
-    // Initialize Telegram Bot and Start Core 0 Task
-    secured_client.setInsecure(); // Bypass NTP/Certificate check for stability
-    
-    xTaskCreatePinnedToCore(
-      telegramTaskCode,   /* Task function. */
-      "TelegramTask",     /* name of task. */
-      8192,               /* Stack size of task (8KB) */
-      NULL,               /* parameter of the task */
-      1,                  /* priority of the task */
-      NULL,               /* Task handle to keep track of created task */
-      1);                 /* pin task to core 0 */
-    Serial.println("Telegram Bot task started on Core 0 (Insecure Mode)");
   } else {
     lv_label_set_text(label_status, "WiFi Failed!");
   }
@@ -1614,7 +1459,7 @@ void captureImage(String targetIP) {
   
   String url = "http://" + targetIP + "/capture";
   http.begin(url);
-  http.setTimeout(5000); // 5 second connection timeout
+  http.setTimeout(CAPTURE_TIMEOUT_MS); // Use global timeout
   int httpCode = http.GET();
   
   if (httpCode == 200) {
@@ -1625,8 +1470,8 @@ void captureImage(String targetIP) {
       if (sharedBuffer) {
         size_t bytesRead = 0;
         unsigned long start = millis();
-        // 5 second total download timeout
-        while (http.connected() && bytesRead < (size_t)contentLength && (millis() - start < 5000)) {
+        // Total download timeout
+        while (http.connected() && bytesRead < (size_t)contentLength && (millis() - start < CAPTURE_TIMEOUT_MS)) {
           if (stream->available()) {
             int canRead = min((int)stream->available(), (int)(MAX_BUFFER_SIZE - bytesRead));
             int len = stream->readBytes(sharedBuffer + bytesRead, canRead);
@@ -1680,9 +1525,103 @@ void runGlobalCapture() {
     displayImageOrText();
     lv_label_set_text(label_status, lastGlobalIP.c_str());
     playCaptureBeep();
+    
+    // Upload to Telegram
+    Serial.println("External trigger: Sending photo to Telegram...");
+    sendPhotoToTelegram(targetChatId, sharedBuffer, sharedBufferSize);
   }
   notify_done_time = millis();
   if (notify_done_time == 0) notify_done_time = 1;
+}
+
+void sendPhotoToTelegram(String chatId, uint8_t* imageBuffer, int imageSize) {
+  WiFiClientSecure client;
+  client.setInsecure(); // Disable certificate verification
+  
+  const char* host = "api.telegram.org";
+  const int port = 443;
+  
+  Serial.printf("Connecting to %s:%d...\n", host, port);
+  Serial.printf("[DEBUG] Free Heap: %u, Max Block: %u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  
+  if (!client.connect(host, port)) {
+    Serial.println("Connection to Telegram failed for sending photo");
+    char err_buf[100];
+    client.lastError(err_buf, 100);
+    Serial.printf("[TLS ERROR] %s\n", err_buf);
+    return;
+  }
+  Serial.println("[OK] Connected to Telegram API");
+
+  String boundary = "----ESP32Boundary" + String(millis());
+  
+  // Create the header part of the multipart form data
+  String head = "--" + boundary + "\r\n"
+              + "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
+              + chatId + "\r\n"
+              + "--" + boundary + "\r\n"
+              + "Content-Disposition: form-data; name=\"photo\"; filename=\"image.jpg\"\r\n"
+              + "Content-Type: image/jpeg\r\n\r\n";
+              
+  // Create the tail part
+  String tail = "\r\n--" + boundary + "--\r\n";
+  
+  // Calculate total payload length
+  uint32_t contentLength = head.length() + imageSize + tail.length();
+  
+  // Send HTTP headers
+  client.println("POST /bot" + botToken + "/sendPhoto HTTP/1.1");
+  client.println("Host: " + String(host));
+  client.println("Content-Length: " + String(contentLength));
+  client.println("Content-Type: multipart/form-data; boundary=" + boundary);
+  client.println();
+  
+  // Send the multipart payload head
+  client.print(head);
+  
+  // Send image in chunks. We allocate a small chunk buffer in INTERNAL RAM.
+  int chunkSize = 2048; // Send 2KB at a time
+  uint8_t* chunkBuffer = (uint8_t*)malloc(chunkSize);
+  
+  if (chunkBuffer != nullptr) {
+    for (int i = 0; i < imageSize; i += chunkSize) {
+      int currentChunkSize = min(chunkSize, imageSize - i);
+      // Copy from buffer to internal RAM
+      memcpy(chunkBuffer, imageBuffer + i, currentChunkSize);
+      // Write from internal RAM
+      client.write(chunkBuffer, currentChunkSize);
+    }
+    free(chunkBuffer);
+  } else {
+    Serial.println("Failed to allocate chunk buffer in internal RAM! Sending directly from buffer as fallback.");
+    for (int i = 0; i < imageSize; i += chunkSize) {
+      int currentChunkSize = min(chunkSize, imageSize - i);
+      client.write(imageBuffer + i, currentChunkSize);
+    }
+  }
+  
+  // Send the multipart payload tail
+  client.print(tail);
+  
+  // Wait for the response
+  while (client.connected()) {
+    String line = client.readStringUntil('\n');
+    if (line == "\r") {
+      break;
+    }
+  }
+  
+  // Read and print response payload
+  String response = client.readString();
+  Serial.println("Telegram Response: " + response);
+  
+  client.stop();
+  
+  if (response.indexOf("\"ok\":true") > 0) {
+    Serial.println("Photo sent successfully to Telegram!");
+  } else {
+    Serial.println("Error sending photo to Telegram.");
+  }
 }
 
 void handleCaptureMulti() {
@@ -1791,7 +1730,7 @@ void captureMultiImage() {
   String url = "http://" + multiTargetIP + "/capture";
   
   http.begin(url);
-  http.setTimeout(5000);
+  http.setTimeout(CAPTURE_TIMEOUT_MS); // Use global timeout
   int httpCode = http.GET();
   if (httpCode == 200) {
     int contentLength = http.getSize();
@@ -1800,7 +1739,7 @@ void captureMultiImage() {
       if (sharedBuffer) {
         size_t bytesRead = 0;
         unsigned long start = millis();
-        while (http.connected() && bytesRead < (size_t)contentLength && (millis() - start < 5000)) {
+        while (http.connected() && bytesRead < (size_t)contentLength && (millis() - start < CAPTURE_TIMEOUT_MS)) {
           if (stream->available()) {
             int canRead = min((int)stream->available(), (int)(MAX_BUFFER_SIZE - bytesRead));
             int len = stream->readBytes(sharedBuffer + bytesRead, canRead);
