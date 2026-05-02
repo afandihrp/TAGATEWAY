@@ -31,7 +31,8 @@ void setup() {
   if (psramInit()) {
     Serial.println("PSRAM is correctly initialized.");
   } else {
-    Serial.println("PSRAM initialization failed! Check your board settings.");
+    Serial.println("PSRAM initialization failed! Falling back to Internal RAM.");
+    Serial.printf("Free Internal RAM: %d bytes\n", ESP.getFreeHeap());
   }
 
   // Connect to Wi-Fi
@@ -167,17 +168,23 @@ void fetchAndSendPhoto(String chatId) {
 
   Serial.printf("Image size: %d bytes\n", len);
 
-  // Allocate memory in PSRAM buffer
-  uint8_t* imageBuffer = (uint8_t*)ps_malloc(len);
+  // Allocate memory in RAM buffer (PSRAM preferred)
+  uint8_t* imageBuffer = nullptr;
+  if (psramFound()) {
+    imageBuffer = (uint8_t*)ps_malloc(len);
+    if (imageBuffer) Serial.println("PSRAM memory allocated. Downloading image...");
+  } else {
+    imageBuffer = (uint8_t*)malloc(len);
+    if (imageBuffer) Serial.println("Internal RAM memory allocated. Downloading image...");
+  }
+
   if (imageBuffer == nullptr) {
-    sendTelegramMessage(chatId, "Failed to allocate memory in PSRAM.");
+    sendTelegramMessage(chatId, "Failed to allocate memory for image.");
     http.end();
     return;
   }
   
-  Serial.println("PSRAM memory allocated. Downloading image...");
-
-  // Download the image directly into PSRAM buffer
+  // Download the image directly into RAM buffer
   WiFiClient* stream = http.getStreamPtr();
   int bytesRead = 0;
   unsigned long timeout = millis();
