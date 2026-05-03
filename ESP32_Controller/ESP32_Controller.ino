@@ -1546,96 +1546,125 @@ void runGlobalCapture() {
 }
 
 void sendPhotoToTelegram(String chatId, uint8_t* imageBuffer, int imageSize) {
-  WiFiClientSecure client;
-  client.setInsecure(); // Disable certificate verification
-  client.setTimeout(30000); // 30 second timeout for large photo uploads
-  
   const char* host = "api.telegram.org";
   const int port = 443;
+  int maxRetries = 3;
   
-  Serial.printf("Connecting to %s:%d...\n", host, port);
-  Serial.printf("[DEBUG] Free Heap: %u, Max Block: %u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-  
-  if (!client.connect(host, port)) {
-    Serial.println("Connection to Telegram failed for sending photo");
-    char err_buf[100];
-    client.lastError(err_buf, 100);
-    Serial.printf("[TLS ERROR] %s\n", err_buf);
-    return;
-  }
-  Serial.println("[OK] Connected to Telegram API");
+  for (int attempt = 1; attempt <= maxRetries; attempt++) {
+    Serial.printf("\n--- Telegram Upload Attempt %d/%d ---\n", attempt, maxRetries);
+    
+    WiFiClientSecure client;
+    client.setInsecure(); // Disable certificate verification
+    client.setTimeout(30000); // 30 second global socket timeout
+    
+    Serial.printf("Connecting to %s:%d...\n", host, port);
+    Serial.printf("[DEBUG] Free Heap: %u, Max Block: %u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    
+    if (!client.connect(host, port)) {
+      Serial.println("[ERROR] Connection to Telegram failed");
+      char err_buf[100];
+      client.lastError(err_buf, 100);
+      Serial.printf("[TLS ERROR] %s\n", err_buf);
+      if (attempt < maxRetries) {
+        delay(2000);
+        continue; // Retry
+      }
+      return;
+    }
+    Serial.println("[OK] Connected to Telegram API");
 
-  String boundary = "----ESP32Boundary" + String(millis());
-  
-  // Create the header part of the multipart form data
-  String head = "--" + boundary + "\r\n"
-              + "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
-              + chatId + "\r\n"
-              + "--" + boundary + "\r\n"
-              + "Content-Disposition: form-data; name=\"photo\"; filename=\"image.jpg\"\r\n"
-              + "Content-Type: image/jpeg\r\n\r\n";
-              
-  // Create the tail part
-  String tail = "\r\n--" + boundary + "--\r\n";
-  
-  // Calculate total payload length
-  uint32_t contentLength = head.length() + imageSize + tail.length();
-  
-  // Send HTTP headers
-  client.println("POST /bot" + botToken + "/sendPhoto HTTP/1.1");
-  client.println("Host: " + String(host));
-  client.println("Connection: close"); // Prevent long timeouts waiting for server to close
-  client.println("Content-Length: " + String(contentLength));
-  client.println("Content-Type: multipart/form-data; boundary=" + boundary);
-  client.println();
-  
-  // Send the multipart payload head
-  client.print(head);
-  
-  // Send image in chunks using the permanent internal RAM buffer to avoid DMA issues
-  int chunkSize = 2048; // Send 2KB at a time
-  for (int i = 0; i < imageSize; i += chunkSize) {
-    int currentChunkSize = min(chunkSize, imageSize - i);
-    // Copy from shared buffer to permanent internal RAM buffer
-    memcpy(telegramChunkBuffer, imageBuffer + i, currentChunkSize);
-    // Write from internal RAM
-    size_t written = client.write(telegramChunkBuffer, currentChunkSize);
+    String boundary = "----ESP32Boundary" + String(millis());
     
-    if (written == (size_t)currentChunkSize) {
-      Serial.printf("[DEBUG] Chunk sent: %d / %d bytes\n", i + currentChunkSize, imageSize);
+    // Create the header part of the multipart form data
+    String head = "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
+                + chatId + "\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"photo\"; filename=\"image.jpg\"\r\n"
+                + "Content-Type: image/jpeg\r\n\r\n";
+                
+    // Create the tail part
+    String tail = "\r\n--" + boundary + "--\r\n";
+    
+    // Calculate total payload length
+    uint32_t contentLength = head.length() + imageSize + tail.length();
+    
+    // Send HTTP headers
+    client.println("POST /bot" + botToken + "/sendPhoto HTTP/1.1");
+    client.println("Host: " + String(host));
+    client.println("Connection: close"); // Prevent long timeouts waiting for server to close
+    client.println("Content-Length: " + String(contentLength));
+    client.println("Content-Type: multipart/form-data; boundary=" + boundary);
+    client.println();
+    
+    // Send the multipart payload head
+    client.print(head);
+    
+    // Send image in chunks using the permanent internal RAM buffer to avoid DMA issues
+    int chunkSize = 2048; // Send 2KB at a time
+    bool uploadFailed = false;
+    
+    for (int i = 0; i < imageSize; i += chunkSize) {
+      int currentChunkSize = min(chunkSize, imageSize - i);
+      // Copy from shared buffer to permanent internal RAM buffer
+      memcpy(telegramChunkBuffer, imageBuffer + i, currentChunkSize);
+      
+      size_t written = client.write(telegramChunkBuffer, currentChunkSize);
+      
+      if (written != (size_t)currentChunkSize) {
+        Serial.printf("[ERROR] Chunk write failed at offset %d. Wrote %d of %d bytes.\n", i, written, currentChunkSize);
+        uploadFailed = true;
+        break; // Break chunk loop to trigger full retry
+      } else {
+        Serial.printf("[DEBUG] Chunk sent: %d / %d bytes\n", i + currentChunkSize, imageSize);
+      }
+      
+      // Keep UI responsive during upload
+      lv_timer_handler();
+      delay(1);
+    }
+    
+    if (uploadFailed) {
+      client.stop();
+      if (attempt < maxRetries) {
+        delay(2000);
+        continue; // Retry full upload
+      }
+      break;
+    }
+    
+    // Send the multipart payload tail
+    client.print(tail);
+    
+    // Wait for and read the response robustly to avoid UI freeze
+    String response = "";
+    uint32_t response_timeout = millis();
+    while (client.connected() && millis() - response_timeout < 15000) {
+      if (client.available()) {
+        char c = (char)client.read();
+        response += c;
+        response_timeout = millis();
+      }
+      lv_timer_handler(); // Process UI while reading
+      delay(1);
+    }
+    
+    client.stop();
+    Serial.println("Telegram Response: " + response);
+    
+    if (response.indexOf("\"ok\":true") > 0) {
+      Serial.println("Photo sent successfully to Telegram!");
+      return; // Success, exit function
     } else {
-      Serial.printf("[ERROR] Chunk send failed at %d bytes (wrote %d of %d)\n", i, written, currentChunkSize);
+      Serial.println("Error sending photo to Telegram.");
+      if (attempt < maxRetries) {
+        delay(2000);
+        continue; // Retry full upload
+      }
     }
-    
-    // Keep UI responsive during upload
-    lv_timer_handler();
-    delay(1);
   }
   
-  // Send the multipart payload tail
-  client.print(tail);
-  
-  // Wait for and read the response robustly to avoid UI freeze
-  String response = "";
-  uint32_t response_timeout = millis();
-  while (client.connected() && millis() - response_timeout < 15000) {
-    if (client.available()) {
-      char c = (char)client.read();
-      response += c;
-      response_timeout = millis();
-    }
-    lv_timer_handler(); // Process UI while reading
-    delay(1);
-  }
-  Serial.println("Telegram Response: " + response);
-  
-  client.stop();
-  
-  if (response.indexOf("\"ok\":true") > 0) {
-    Serial.println("Photo sent successfully to Telegram!");
-  } else {
-    Serial.println("Error sending photo to Telegram.");
-  }
+  Serial.println("[FATAL] All Telegram upload attempts failed.");
 }
 
 void handleCaptureMulti() {
