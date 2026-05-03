@@ -166,7 +166,7 @@ uint8_t* sharedBuffer = nullptr;
 size_t sharedBufferSize = 0;
 const size_t MAX_BUFFER_SIZE = 40 * 1024; // Shared limit (64KB)
 const uint32_t CAPTURE_TIMEOUT_MS = 10000;       // 8 second timeout for picture fetching
-uint8_t telegramChunkBuffer[2048];               // Permanent 2KB buffer for SSL DMA writes
+uint8_t telegramChunkBuffer[1024];              // Permanent 16KB buffer for SSL DMA writes
 
 // Function declarations
 void connectToWiFi();
@@ -1601,7 +1601,7 @@ void sendPhotoToTelegram(String chatId, uint8_t* imageBuffer, int imageSize) {
     client.print(head);
     
     // Send image in chunks using the permanent internal RAM buffer to avoid DMA issues
-    int chunkSize = 2048; // Send 2KB at a time
+    int chunkSize = 1024; // Send 4KB at a time
     bool uploadFailed = false;
     
     for (int i = 0; i < imageSize; i += chunkSize) {
