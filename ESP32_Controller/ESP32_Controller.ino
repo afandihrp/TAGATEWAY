@@ -164,8 +164,8 @@ const int buzzerPin = 12;
 // Shared buffer for both still images and video stream
 uint8_t* sharedBuffer = nullptr;
 size_t sharedBufferSize = 0;
-const size_t MAX_BUFFER_SIZE = 32 * 1024; // Shared limit (64KB)
-const uint32_t CAPTURE_TIMEOUT_MS = 8000;       // 8 second timeout for picture fetching
+const size_t MAX_BUFFER_SIZE = 40 * 1024; // Shared limit (64KB)
+const uint32_t CAPTURE_TIMEOUT_MS = 10000;       // 8 second timeout for picture fetching
 
 // Function declarations
 void connectToWiFi();
@@ -1454,16 +1454,21 @@ void clearSharedBuffer() {
 }
 
 void captureImage(String targetIP) {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[ERROR] Capture failed: WiFi disconnected");
+    return;
+  }
   clearSharedBuffer();
   
   String url = "http://" + targetIP + "/capture";
+  Serial.printf("[INFO] Fetching image from: %s\n", url.c_str());
   http.begin(url);
   http.setTimeout(CAPTURE_TIMEOUT_MS); // Use global timeout
   int httpCode = http.GET();
   
   if (httpCode == 200) {
     int contentLength = http.getSize();
+    Serial.printf("[INFO] Image size reported: %d bytes\n", contentLength);
     WiFiClient* stream = http.getStreamPtr();
     
     if (contentLength > 0 && contentLength <= MAX_BUFFER_SIZE) {
@@ -1487,13 +1492,23 @@ void captureImage(String targetIP) {
           if (getJpgSize(sharedBuffer, sharedBufferSize, &w, &h)) {
             lastImgW = w;
             lastImgH = h;
+            Serial.printf("[SUCCESS] Image captured: %dx%d, Size: %d bytes\n", w, h, sharedBufferSize);
+          } else {
+            Serial.println("[ERROR] Captured image is not a valid JPEG.");
           }
         } else {
           // Download incomplete or timeout
+          Serial.printf("[ERROR] Download incomplete or timeout. Read %d of %d bytes.\n", bytesRead, contentLength);
           clearSharedBuffer();
         }
+      } else {
+        Serial.println("[ERROR] Shared buffer is null.");
       }
+    } else {
+      Serial.printf("[ERROR] Image size (%d bytes) exceeds MAX_BUFFER_SIZE (%d bytes) or is invalid.\n", contentLength, MAX_BUFFER_SIZE);
     }
+  } else {
+    Serial.printf("[ERROR] HTTP request failed with code: %d\n", httpCode);
   }
   http.end();
 }
@@ -1722,18 +1737,23 @@ void displayImageOrText() {
 }
 
 void captureMultiImage() {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[ERROR] Multi-Capture failed: WiFi disconnected");
+    return;
+  }
   
   if (multiTargetIP == "Select IP") return;
 
   clearSharedBuffer();
   String url = "http://" + multiTargetIP + "/capture";
+  Serial.printf("[INFO] Fetching multi-camera image from: %s\n", url.c_str());
   
   http.begin(url);
   http.setTimeout(CAPTURE_TIMEOUT_MS); // Use global timeout
   int httpCode = http.GET();
   if (httpCode == 200) {
     int contentLength = http.getSize();
+    Serial.printf("[INFO] Multi-camera image size: %d bytes\n", contentLength);
     WiFiClient* stream = http.getStreamPtr();
     if (contentLength > 0 && contentLength <= MAX_BUFFER_SIZE) {
       if (sharedBuffer) {
@@ -1748,10 +1768,21 @@ void captureMultiImage() {
           lv_timer_handler(); // Process touch while downloading
           delay(1);
         }
-        if (bytesRead == (size_t)contentLength) sharedBufferSize = bytesRead;
-        else clearSharedBuffer();
+        if (bytesRead == (size_t)contentLength) {
+          sharedBufferSize = bytesRead;
+          Serial.printf("[SUCCESS] Multi-camera image captured: %d bytes\n", sharedBufferSize);
+        } else {
+          Serial.printf("[ERROR] Multi-camera download fail/timeout. Read %d of %d bytes.\n", bytesRead, contentLength);
+          clearSharedBuffer();
+        }
+      } else {
+        Serial.println("[ERROR] Shared buffer is null (multi).");
       }
+    } else {
+      Serial.printf("[ERROR] Multi-camera image size (%d bytes) exceeds MAX_BUFFER_SIZE (%d bytes) or is invalid.\n", contentLength, MAX_BUFFER_SIZE);
     }
+  } else {
+    Serial.printf("[ERROR] Multi-camera HTTP request failed with code: %d\n", httpCode);
   }
   http.end();
 }
