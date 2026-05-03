@@ -638,7 +638,6 @@ void switchScreen(int scr_id) {
   } else if (scr_id == 1) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    clearSharedBuffer(); // Clear current image from RAM when switching to config
     lv_label_set_text(label_config_ip, configTargetIP.c_str());
     lv_scr_load(scr_config);
     
@@ -650,19 +649,16 @@ void switchScreen(int scr_id) {
   } else if (scr_id == 2) {
     lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    clearSharedBuffer();
     lv_scr_load(scr_stats);
   } else if (scr_id == 3) {
     lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    clearSharedBuffer();
     lv_obj_clean(scr_devices); // Clear old table
     buildDevicesScreen();     // Re-render with new data
     lv_scr_load(scr_devices);
   } else if (scr_id == 4) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    clearSharedBuffer();
     
     if (multiTargetIP == "Select IP") {
       for (int i = 0; i < 5; i++) {
@@ -703,7 +699,6 @@ void switchScreen(int scr_id) {
   } else if (scr_id == 5) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    clearSharedBuffer();
     lv_obj_clean(scr_ip_select);
     buildIpSelectScreen();
     lv_scr_load(scr_ip_select);
