@@ -166,6 +166,7 @@ uint8_t* sharedBuffer = nullptr;
 size_t sharedBufferSize = 0;
 const size_t MAX_BUFFER_SIZE = 40 * 1024; // Shared limit (64KB)
 const uint32_t CAPTURE_TIMEOUT_MS = 10000;       // 8 second timeout for picture fetching
+uint8_t telegramChunkBuffer[2048];               // Permanent 2KB buffer for SSL DMA writes
 
 // Function declarations
 void connectToWiFi();
@@ -1552,6 +1553,7 @@ void runGlobalCapture() {
 void sendPhotoToTelegram(String chatId, uint8_t* imageBuffer, int imageSize) {
   WiFiClientSecure client;
   client.setInsecure(); // Disable certificate verification
+  client.setTimeout(30000); // 30 second timeout for large photo uploads
   
   const char* host = "api.telegram.org";
   const int port = 443;
@@ -1587,6 +1589,7 @@ void sendPhotoToTelegram(String chatId, uint8_t* imageBuffer, int imageSize) {
   // Send HTTP headers
   client.println("POST /bot" + botToken + "/sendPhoto HTTP/1.1");
   client.println("Host: " + String(host));
+  client.println("Connection: close"); // Prevent long timeouts waiting for server to close
   client.println("Content-Length: " + String(contentLength));
   client.println("Content-Type: multipart/form-data; boundary=" + boundary);
   client.println();
@@ -1594,40 +1597,41 @@ void sendPhotoToTelegram(String chatId, uint8_t* imageBuffer, int imageSize) {
   // Send the multipart payload head
   client.print(head);
   
-  // Send image in chunks. We allocate a small chunk buffer in INTERNAL RAM.
+  // Send image in chunks using the permanent internal RAM buffer to avoid DMA issues
   int chunkSize = 2048; // Send 2KB at a time
-  uint8_t* chunkBuffer = (uint8_t*)malloc(chunkSize);
-  
-  if (chunkBuffer != nullptr) {
-    for (int i = 0; i < imageSize; i += chunkSize) {
-      int currentChunkSize = min(chunkSize, imageSize - i);
-      // Copy from buffer to internal RAM
-      memcpy(chunkBuffer, imageBuffer + i, currentChunkSize);
-      // Write from internal RAM
-      client.write(chunkBuffer, currentChunkSize);
+  for (int i = 0; i < imageSize; i += chunkSize) {
+    int currentChunkSize = min(chunkSize, imageSize - i);
+    // Copy from shared buffer to permanent internal RAM buffer
+    memcpy(telegramChunkBuffer, imageBuffer + i, currentChunkSize);
+    // Write from internal RAM
+    size_t written = client.write(telegramChunkBuffer, currentChunkSize);
+    
+    if (written == (size_t)currentChunkSize) {
+      Serial.printf("[DEBUG] Chunk sent: %d / %d bytes\n", i + currentChunkSize, imageSize);
+    } else {
+      Serial.printf("[ERROR] Chunk send failed at %d bytes (wrote %d of %d)\n", i, written, currentChunkSize);
     }
-    free(chunkBuffer);
-  } else {
-    Serial.println("Failed to allocate chunk buffer in internal RAM! Sending directly from buffer as fallback.");
-    for (int i = 0; i < imageSize; i += chunkSize) {
-      int currentChunkSize = min(chunkSize, imageSize - i);
-      client.write(imageBuffer + i, currentChunkSize);
-    }
+    
+    // Keep UI responsive during upload
+    lv_timer_handler();
+    delay(1);
   }
   
   // Send the multipart payload tail
   client.print(tail);
   
-  // Wait for the response
-  while (client.connected()) {
-    String line = client.readStringUntil('\n');
-    if (line == "\r") {
-      break;
+  // Wait for and read the response robustly to avoid UI freeze
+  String response = "";
+  uint32_t response_timeout = millis();
+  while (client.connected() && millis() - response_timeout < 15000) {
+    if (client.available()) {
+      char c = (char)client.read();
+      response += c;
+      response_timeout = millis();
     }
+    lv_timer_handler(); // Process UI while reading
+    delay(1);
   }
-  
-  // Read and print response payload
-  String response = client.readString();
   Serial.println("Telegram Response: " + response);
   
   client.stop();
