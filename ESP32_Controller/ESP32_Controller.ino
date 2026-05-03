@@ -161,12 +161,14 @@ uint32_t last_udp_send_time = 0;
 const int udpPort = 8888;
 const int buzzerPin = 12;
 
+TaskHandle_t telegramTaskHandle = NULL;
+
 // Shared buffer for both still images and video stream
 uint8_t* sharedBuffer = nullptr;
 size_t sharedBufferSize = 0;
-const size_t MAX_BUFFER_SIZE = 40 * 1024; // Shared limit (64KB)
+const size_t MAX_BUFFER_SIZE = 40 * 1024; // Shared limit (40KB)
 const uint32_t CAPTURE_TIMEOUT_MS = 10000;       // 8 second timeout for picture fetching
-uint8_t telegramChunkBuffer[1024];              // Permanent 16KB buffer for SSL DMA writes
+uint8_t telegramChunkBuffer[1024];               // Permanent 1KB buffer for SSL DMA writes
 
 // Function declarations
 void connectToWiFi();
@@ -1526,6 +1528,14 @@ void handleCapture() {
   }
 }
 
+void telegramUploadTask(void *pvParameters) {
+  Serial.println("[TASK] Telegram upload task started.");
+  sendPhotoToTelegram(targetChatId, sharedBuffer, sharedBufferSize);
+  Serial.println("[TASK] Telegram upload task finished.");
+  telegramTaskHandle = NULL;
+  vTaskDelete(NULL);
+}
+
 void runGlobalCapture() {
   if (lastGlobalIP == "") {
     return;
@@ -1537,9 +1547,21 @@ void runGlobalCapture() {
     lv_label_set_text(label_status, lastGlobalIP.c_str());
     playCaptureBeep();
     
-    // Upload to Telegram
-    Serial.println("External trigger: Sending photo to Telegram...");
-    sendPhotoToTelegram(targetChatId, sharedBuffer, sharedBufferSize);
+    // Upload to Telegram in background
+    Serial.println("External trigger: Starting Telegram background task...");
+    if (telegramTaskHandle == NULL) {
+      xTaskCreatePinnedToCore(
+        telegramUploadTask,   // Task function
+        "TelegramTask",       // Task name
+        8192,                 // Stack size
+        NULL,                 // Parameters
+        1,                    // Priority
+        &telegramTaskHandle,  // Task handle
+        0                     // Core 0 (background)
+      );
+    } else {
+      Serial.println("[WARNING] Telegram upload already in progress. Skipping.");
+    }
   }
   notify_done_time = millis();
   if (notify_done_time == 0) notify_done_time = 1;
@@ -1601,7 +1623,7 @@ void sendPhotoToTelegram(String chatId, uint8_t* imageBuffer, int imageSize) {
     client.print(head);
     
     // Send image in chunks using the permanent internal RAM buffer to avoid DMA issues
-    int chunkSize = 1024; // Send 4KB at a time
+    int chunkSize = 1024; // Send 1KB at a time
     bool uploadFailed = false;
     
     for (int i = 0; i < imageSize; i += chunkSize) {
@@ -1619,8 +1641,7 @@ void sendPhotoToTelegram(String chatId, uint8_t* imageBuffer, int imageSize) {
         Serial.printf("[DEBUG] Chunk sent: %d / %d bytes\n", i + currentChunkSize, imageSize);
       }
       
-      // Keep UI responsive during upload
-      lv_timer_handler();
+      // Yield time to the watchdog (UI is handled by main loop concurrently)
       delay(1);
     }
     
@@ -1636,7 +1657,7 @@ void sendPhotoToTelegram(String chatId, uint8_t* imageBuffer, int imageSize) {
     // Send the multipart payload tail
     client.print(tail);
     
-    // Wait for and read the response robustly to avoid UI freeze
+    // Wait for and read the response robustly
     String response = "";
     uint32_t response_timeout = millis();
     while (client.connected() && millis() - response_timeout < 15000) {
@@ -1645,8 +1666,7 @@ void sendPhotoToTelegram(String chatId, uint8_t* imageBuffer, int imageSize) {
         response += c;
         response_timeout = millis();
       }
-      lv_timer_handler(); // Process UI while reading
-      delay(1);
+      delay(1); // Yield time
     }
     
     client.stop();
