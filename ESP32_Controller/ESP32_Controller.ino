@@ -339,7 +339,7 @@ void setup() {
   lv_init();
   
   // Allocate LVGL draw buffer
-  size_t buf_lines = 10; // Reduced lines to save RAM
+  size_t buf_lines = 5; // Ultra-minimal lines to save RAM for SSL
   size_t buf_size = screenWidth * buf_lines; 
   if (psramFound()) {
     buf = (lv_color_t *)heap_caps_malloc(buf_size * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
@@ -1553,7 +1553,7 @@ void runGlobalCapture() {
       xTaskCreatePinnedToCore(
         telegramUploadTask,   // Task function
         "TelegramTask",       // Task name
-        8192,                 // Stack size
+        5120,                 // Stack size (5KB optimized)
         NULL,                 // Parameters
         1,                    // Priority
         &telegramTaskHandle,  // Task handle
