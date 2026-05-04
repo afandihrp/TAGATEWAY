@@ -116,6 +116,8 @@ lv_obj_t * label_ram_multi;
 lv_obj_t * label_notify_multi;
 lv_obj_t * label_ram_stats;
 lv_obj_t * label_ram_devices;
+lv_obj_t * sd_bar;
+lv_obj_t * sd_val_label;
 lv_obj_t * scr_ip_select;
 lv_obj_t * btn_select_ip;
 lv_obj_t * label_select_ip;
@@ -671,6 +673,30 @@ void updateRAMUsage(bool force) {
       lv_label_set_text_fmt(label_ram_multi, "RAM: %u/%u KB", used_h/1024, total_h/1024);
     } else if (current_screen == 2) {
       lv_label_set_text_fmt(label_ram_stats, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+      
+      // Update SD Storage Stats
+      if (sdAvailable) {
+        uint64_t totalBytes = SD.totalBytes();
+        uint64_t usedBytes = SD.usedBytes();
+        int totalMB = (int)(totalBytes / (1024 * 1024));
+        int usedMB = (int)(usedBytes / (1024 * 1024));
+        
+        if (sd_bar) {
+          lv_bar_set_range(sd_bar, 0, totalMB);
+          lv_bar_set_value(sd_bar, usedMB, LV_ANIM_OFF);
+        }
+        if (sd_val_label) {
+          lv_label_set_text_fmt(sd_val_label, " %d/%dMB", usedMB, totalMB);
+        }
+      } else {
+        if (sd_bar) {
+          lv_bar_set_range(sd_bar, 0, 1);
+          lv_bar_set_value(sd_bar, 0, LV_ANIM_OFF);
+        }
+        if (sd_val_label) {
+          lv_label_set_text(sd_val_label, " No SD Card");
+        }
+      }
     } else if (current_screen == 3) {
       lv_obj_clean(scr_devices);
       buildDevicesScreen();
@@ -1024,7 +1050,7 @@ void buildStatsScreen() {
   lv_label_set_text(sd_label, "SD Card: ");
   lv_obj_set_style_text_color(sd_label, lv_color_white(), 0);
 
-  lv_obj_t * sd_bar = lv_bar_create(sd_cont);
+  sd_bar = lv_bar_create(sd_cont);
   lv_obj_set_size(sd_bar, 180, 15);
   lv_obj_set_style_radius(sd_bar, 0, 0); // Square corners
   lv_obj_set_style_radius(sd_bar, 0, LV_PART_INDICATOR);
@@ -1033,7 +1059,7 @@ void buildStatsScreen() {
   lv_bar_set_range(sd_bar, 0, 8000);
   lv_bar_set_value(sd_bar, 1, LV_ANIM_OFF); // Dummy data
 
-  lv_obj_t * sd_val_label = lv_label_create(sd_cont);
+  sd_val_label = lv_label_create(sd_cont);
   lv_label_set_text(sd_val_label, " 1/8000kb");
   lv_obj_set_style_text_color(sd_val_label, lv_color_white(), 0);
 }
