@@ -1487,6 +1487,13 @@ bool captureImage(String targetIP, const char* path) {
   String url = "http://" + targetIP + "/capture";
   Serial.printf("[INFO] Fetching image from: %s to %s\n", url.c_str(), path);
 
+  // Set initial status
+  lv_obj_t* startLabel = (strcmp(path, IMAGE_PATH) == 0) ? label_status : label_notify_multi;
+  if (startLabel) {
+    lv_label_set_text(startLabel, "Capturing...");
+    lv_timer_handler();
+  }
+
   http.begin(url);
   http.setTimeout(CAPTURE_TIMEOUT_MS);
   int httpCode = http.GET();
@@ -1512,6 +1519,18 @@ bool captureImage(String targetIP, const char* path) {
         size_t readLen = stream->readBytes(chunkBuffer, min(available, sizeof(chunkBuffer)));
         file.write(chunkBuffer, readLen);
         bytesDownloaded += readLen;
+        
+        // Update download progress UI
+        lv_obj_t* targetLabel = (strcmp(path, IMAGE_PATH) == 0) ? label_status : label_notify_multi;
+        if (targetLabel) {
+          static uint32_t last_down_ui = 0;
+          if (millis() - last_down_ui > 150) {
+            lv_label_set_text_fmt(targetLabel, "down: %d/%dk", bytesDownloaded/1024, contentLength/1024);
+            lv_timer_handler();
+            last_down_ui = millis();
+          }
+        }
+        
         startMs = millis(); // Reset timeout on activity
       }
       
@@ -1753,6 +1772,43 @@ bool getJpgSize(const uint8_t* data, size_t len, uint16_t *w, uint16_t *h) {
   return false;
 }
 
+// Custom DataWrapper for SD reading with progress reporting
+class SDProgressWrapper : public lgfx::DataWrapper {
+public:
+  File file;
+  lv_obj_t* label;
+  size_t total;
+  size_t read_bytes;
+  uint32_t last_ui;
+
+  SDProgressWrapper(const char* path, lv_obj_t* l) : label(l), read_bytes(0), last_ui(0) {
+    file = SD.open(path, FILE_READ);
+    total = file ? file.size() : 0;
+    need_transaction = true;
+  }
+  
+  ~SDProgressWrapper() { if (file) file.close(); }
+
+  int read(uint8_t* buf, uint32_t len) override {
+    if (!file) return 0;
+    size_t r = file.read(buf, len);
+    read_bytes += r;
+    if (label && total > 0) {
+      if (millis() - last_ui > 150) {
+        lv_label_set_text_fmt(label, "rndr: %d/%dk", (int)(read_bytes/1024), (int)(total/1024));
+        lv_timer_handler();
+        last_ui = millis();
+      }
+    }
+    return r;
+  }
+
+  void skip(int32_t len) override { if (file) file.seek(file.position() + len); }
+  bool seek(uint32_t offset) override { return file ? file.seek(offset) : false; }
+  void close() override { if (file) file.close(); }
+  int32_t tell(void) override { return file ? file.position() : 0; }
+};
+
 void displayImageOrText() {
   if (current_screen != 0) return; // Only draw on image screen
   if (!sdAvailable || !sdImageReady) {
@@ -1792,9 +1848,15 @@ void displayImageOrText() {
 
     Serial.printf("[DEBUG] Render: x=%d, y=%d, scale=%.2f\n", x_offset, y_offset, scale);
 
-    if (!tft.drawJpgFile(SD, IMAGE_PATH, x_offset, y_offset, 0, 0, 0, 0, scale, scale)) {
-      Serial.println("[ERR] drawJpgFile failed!");
+    SDProgressWrapper wrapper(IMAGE_PATH, label_status);
+    if (wrapper.file) {
+      if (!tft.drawJpg(&wrapper, x_offset, y_offset, 0, 0, 0, 0, scale, scale)) {
+        Serial.println("[ERR] drawJpg failed!");
+      }
+    } else {
+      Serial.println("[ERR] Could not open IMAGE_PATH for rendering.");
     }
+    
     lv_label_set_text_fmt(label_status, "Cam: %s", lastGlobalIP.c_str());
   } else {
     Serial.println("[ERR] getJpgSize failed to parse SD file header.");
@@ -1855,8 +1917,13 @@ void displayMultiImageOrText() {
 
     Serial.printf("[DEBUG] Multi Render: x=%d, y=%d, scale=%.2f\n", x_offset, y_offset, scale);
 
-    if (!tft.drawJpgFile(SD, IMAGE_PATH_MULTI, x_offset, y_offset, 0, 0, 0, 0, scale, scale)) {
-      Serial.println("[ERR] drawJpgFile (Multi) failed!");
+    SDProgressWrapper wrapper(IMAGE_PATH_MULTI, label_notify_multi);
+    if (wrapper.file) {
+      if (!tft.drawJpg(&wrapper, x_offset, y_offset, 0, 0, 0, 0, scale, scale)) {
+        Serial.println("[ERR] drawJpg (Multi) failed!");
+      }
+    } else {
+      Serial.println("[ERR] Could not open IMAGE_PATH_MULTI for rendering.");
     }
   } else {
     Serial.println("[ERR] getJpgSize failed to parse Multi SD file header.");
