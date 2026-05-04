@@ -801,6 +801,8 @@ void switchScreen(int scr_id) {
   } else if (scr_id == 2) {
     lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clean(scr_stats);
+    buildStatsScreen();
     lv_scr_load(scr_stats);
     lv_refr_now(NULL);
   } else if (scr_id == 3) {
