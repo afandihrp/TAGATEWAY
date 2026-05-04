@@ -359,6 +359,7 @@ void setup() {
   Serial.println("1. Initializing Display...");
   tft.init();
   tft.setRotation(1); // Landscape
+  tft.fillScreen(TFT_BLACK); // Prevent white flash on boot
 
   // [2] Initialize SD Card (HSPI)
   // Ensure VSPI pins are stable before touching HSPI
@@ -415,6 +416,8 @@ void setup() {
   // Create Screens
   scr_image = lv_obj_create(NULL);
   lv_obj_set_style_pad_all(scr_image, 0, 0);
+  lv_obj_set_style_bg_color(scr_image, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_bg_opa(scr_image, 255, 0);
 
   // Top Section (Information)
   top_panel = lv_obj_create(scr_image);
@@ -434,26 +437,32 @@ void setup() {
   lv_obj_set_style_border_width(body_panel, 0, 0);
   lv_obj_set_style_radius(body_panel, 0, 0);
   lv_obj_set_style_bg_color(body_panel, lv_color_hex(0x202020), 0); // Dark grey background
+  lv_obj_set_style_bg_opa(body_panel, 0, 0); // Transparent to avoid overlapping JPEG
 
   scr_config = lv_obj_create(NULL);
   lv_obj_set_style_pad_all(scr_config, 0, 0);
-  lv_obj_set_style_bg_color(scr_config, lv_color_hex(0x202020), 0); // Unified dark grey for entire screen area
+  lv_obj_set_style_bg_color(scr_config, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_bg_opa(scr_config, 255, 0);
 
   scr_stats = lv_obj_create(NULL);
   lv_obj_set_style_pad_all(scr_stats, 0, 0);
   lv_obj_set_style_bg_color(scr_stats, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_bg_opa(scr_stats, 255, 0);
 
   scr_devices = lv_obj_create(NULL);
   lv_obj_set_style_pad_all(scr_devices, 0, 0);
   lv_obj_set_style_bg_color(scr_devices, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_bg_opa(scr_devices, 255, 0);
 
   scr_multi = lv_obj_create(NULL);
   lv_obj_set_style_pad_all(scr_multi, 0, 0);
   lv_obj_set_style_bg_color(scr_multi, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_bg_opa(scr_multi, 255, 0);
 
   scr_ip_select = lv_obj_create(NULL);
   lv_obj_set_style_pad_all(scr_ip_select, 0, 0);
   lv_obj_set_style_bg_color(scr_ip_select, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_bg_opa(scr_ip_select, 255, 0);
 
   // Initialize UI components on Image Screen
   label_status = lv_label_create(top_panel);
@@ -687,34 +696,31 @@ void switchScreen(int scr_id) {
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
     lv_scr_load(scr_image);
     
-    // Force LVGL to render the full screen before we draw raw TFT items
-    // LVGL refresh timer is ~30ms, so we wait slightly longer while processing tasks
-    uint32_t t = millis();
-    while (millis() - t < 50) {
+    // UI Sync: Ensure screen is visible before raw drawing
+    for (int i = 0; i < 15; i++) {
       lv_timer_handler();
-      delay(5);
+      delay(10);
     }
+    lv_refr_now(NULL);
   } else if (scr_id == 1) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(label_config_ip, configTargetIP.c_str());
     lv_scr_load(scr_config);
-    
-    // UI Sync loop to ensure screen is drawn before network call
-    uint32_t t = millis();
-    while (millis() - t < 50) { lv_timer_handler(); delay(5); }
-    
+    lv_refr_now(NULL); // Force synchronous UI draw
     fetchAndApplyConfig();
   } else if (scr_id == 2) {
     lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
     lv_scr_load(scr_stats);
+    lv_refr_now(NULL);
   } else if (scr_id == 3) {
     lv_obj_clear_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clean(scr_devices); // Clear old table
-    buildDevicesScreen();     // Re-render with new data
+    lv_obj_clean(scr_devices);
+    buildDevicesScreen();
     lv_scr_load(scr_devices);
+    lv_refr_now(NULL);
   } else if (scr_id == 4) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
@@ -729,38 +735,41 @@ void switchScreen(int scr_id) {
     }
     
     lv_label_set_text(label_select_ip, multiTargetIP.c_str());
-    lv_scr_load(scr_multi);
     
-    if (is_streaming) {
-      lv_obj_clear_flag(btn_servo, LV_OBJ_FLAG_HIDDEN);
-      stream_paused = false;
-      lv_label_set_text(label_notify_multi, "Streaming");
-      
-      // UI Sync loop before blocking connect
-      uint32_t t = millis();
-      while (millis() - t < 50) { lv_timer_handler(); delay(5); }
-      
-      connectToStream();
-    } else {
+    if (!is_streaming) {
       lv_obj_add_flag(btn_servo, LV_OBJ_FLAG_HIDDEN);
       servo_control_active = false;
       if (panel_servo) lv_obj_add_flag(panel_servo, LV_OBJ_FLAG_HIDDEN);
       if (btn_servo) lv_obj_set_style_bg_opa(btn_servo, LV_OPA_TRANSP, 0);
       lv_label_set_text(label_notify_multi, "Tap to capture");
+    } else {
+      lv_obj_clear_flag(btn_servo, LV_OBJ_FLAG_HIDDEN);
+      stream_paused = false;
+      lv_label_set_text(label_notify_multi, "Streaming");
     }
+
+    lv_scr_load(scr_multi);
     
-    uint32_t t = millis();
-    while (millis() - t < 50) {
+    // UI Sync: Ensure the new screen is fully established and visible on TFT
+    // before we start any raw drawing or blocking operations.
+    for (int i = 0; i < 15; i++) {
       lv_timer_handler();
-      delay(5);
+      delay(10);
     }
-    displayMultiImageOrText();
+    lv_refr_now(NULL); // Force final sync
+    
+    if (is_streaming) {
+      connectToStream();
+    } else {
+      displayMultiImageOrText();
+    }
   } else if (scr_id == 5) {
     lv_obj_add_flag(nav_btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(nav_btn_right, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clean(scr_ip_select);
     buildIpSelectScreen();
     lv_scr_load(scr_ip_select);
+    lv_refr_now(NULL);
   }
   updateRAMUsage(true);
 }
@@ -1211,6 +1220,7 @@ void buildMultiScreen() {
   lv_obj_set_style_border_width(body_panel_multi, 0, 0);
   lv_obj_set_style_radius(body_panel_multi, 0, 0);
   lv_obj_set_style_bg_color(body_panel_multi, lv_color_hex(0x202020), 0);
+  lv_obj_set_style_bg_opa(body_panel_multi, 0, 0); // Transparent to avoid overlapping JPEG
 
   // Servo Slider Panel (Bottom)
   panel_servo = lv_obj_create(scr_multi);
@@ -1553,7 +1563,7 @@ bool captureImage(String targetIP, const char* path) {
         if (targetLabel) {
           static uint32_t last_down_ui = 0;
           if (millis() - last_down_ui > 150) {
-            lv_label_set_text_fmt(targetLabel, "down: %d/%dk", bytesDownloaded/1024, contentLength/1024);
+            lv_label_set_text_fmt(targetLabel, "DOWN: %d/%dk", bytesDownloaded/1024, contentLength/1024);
             lv_timer_handler();
             last_down_ui = millis();
           }
@@ -1831,7 +1841,7 @@ public:
     read_bytes += r;
     if (label && total > 0) {
       if (millis() - last_ui > 150) {
-        lv_label_set_text_fmt(label, "rndr: %d/%dk", (int)(read_bytes/1024), (int)(total/1024));
+        lv_label_set_text_fmt(label, "RNDR: %d/%dk", (int)(read_bytes/1024), (int)(total/1024));
         lv_timer_handler();
         last_ui = millis();
       }
@@ -1847,6 +1857,7 @@ public:
 
 void displayImageOrText() {
   if (current_screen != 0) return; // Only draw on image screen
+
   if (!sdAvailable || !sdImageReady) {
     tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
     lv_label_set_text(label_status, "Waiting...");
@@ -1920,6 +1931,7 @@ bool captureMultiImage() {
 
 void displayMultiImageOrText() {
   if (current_screen != 4) return;
+
   if (!sdAvailable || !sdMultiImageReady) {
     tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
     return;
