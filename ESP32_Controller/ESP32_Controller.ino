@@ -208,6 +208,7 @@ void handleStatus();
 void handleDevices();
 void handleRegister();
 bool captureImage(String targetIP, const char* path, const char* path2 = NULL);
+void processStatistic(bool increment = false);
 String getArchiveFilename();
 void runGlobalCapture();
 bool mountSD();
@@ -1037,6 +1038,20 @@ void chart_draw_event_cb(lv_event_t * e) {
 }
 
 void buildStatsScreen() {
+  // Update/Shift statistics before building screen
+  processStatistic(false);
+  
+  StaticJsonDocument<512> doc;
+  File file = SD.open("/statistic.json", FILE_READ);
+  if (file) {
+    deserializeJson(doc, file);
+    file.close();
+  } else {
+    // Fallback if read fails
+    doc["today"] = 0;
+    for(int i=1; i<=7; i++) doc[String(i)] = 0;
+  }
+
   // Top Section
   lv_obj_t * top_panel_stats = lv_obj_create(scr_stats);
   lv_obj_set_size(top_panel_stats, screenWidth, 30);
@@ -1073,7 +1088,7 @@ void buildStatsScreen() {
 
   // Stats content
   lv_obj_t * lbl_today = lv_label_create(cont);
-  lv_label_set_text(lbl_today, "Camera Triggered Today: 12");
+  lv_label_set_text_fmt(lbl_today, "Camera Triggered Today: %d", (int)(doc["today"] | 0));
   lv_obj_set_width(lbl_today, 360);
   lv_obj_set_style_text_align(lbl_today, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_pad_bottom(lbl_today, 20, 0);
@@ -1106,13 +1121,14 @@ void buildStatsScreen() {
   lv_obj_set_style_pad_bottom(chart, 20, 0);
 
   lv_chart_series_t * ser = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
-  lv_chart_set_next_value(chart, ser, 5);
-  lv_chart_set_next_value(chart, ser, 12);
-  lv_chart_set_next_value(chart, ser, 8);
-  lv_chart_set_next_value(chart, ser, 15);
-  lv_chart_set_next_value(chart, ser, 4);
-  lv_chart_set_next_value(chart, ser, 20);
-  lv_chart_set_next_value(chart, ser, 12);
+  // Populate chart from JSON (indices 7 down to 1)
+  lv_chart_set_next_value(chart, ser, (int)(doc["7"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["6"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["5"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["4"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["3"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["2"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["1"] | 0));
 
   // SD Card Storage Bar
   lv_obj_t * sd_cont = lv_obj_create(cont);
@@ -1696,6 +1712,54 @@ String getArchiveFilename() {
   return "/" + String(index) + ".jpg";
 }
 
+void processStatistic(bool increment) {
+  if (!sdAvailable) return;
+  
+  StaticJsonDocument<512> doc;
+  File file = SD.open("/statistic.json", FILE_READ);
+  if (file) {
+    deserializeJson(doc, file);
+    file.close();
+  } else {
+    // Default values if file doesn't exist
+    doc["today_dd"] = 0;
+    doc["today"] = 0;
+    doc["1"] = 0; doc["2"] = 0; doc["3"] = 0; doc["4"] = 0;
+    doc["5"] = 0; doc["6"] = 0; doc["7"] = 0;
+  }
+  
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 10)) {
+    int current_day = timeinfo.tm_mday;
+    int saved_day = doc["today_dd"] | 0;
+    
+    if (saved_day != 0 && saved_day != current_day) {
+      Serial.println("[STATS] Date change detected. Shifting values...");
+      doc["7"] = doc["6"] | 0;
+      doc["6"] = doc["5"] | 0;
+      doc["5"] = doc["4"] | 0;
+      doc["4"] = doc["3"] | 0;
+      doc["3"] = doc["2"] | 0;
+      doc["2"] = doc["1"] | 0;
+      doc["1"] = doc["today"] | 0;
+      doc["today"] = 0;
+    }
+    doc["today_dd"] = current_day;
+  }
+  
+  if (increment) {
+    int count = doc["today"] | 0;
+    doc["today"] = count + 1;
+    Serial.printf("[STATS] Capture incremented. Today: %d\n", (int)doc["today"]);
+  }
+  
+  file = SD.open("/statistic.json", FILE_WRITE);
+  if (file) {
+    serializeJson(doc, file);
+    file.close();
+  }
+}
+
 bool captureImage(String targetIP, const char* path, const char* path2) {
   if (!sdAvailable) {
     Serial.println("[ERR] Capture aborted: SD card not available.");
@@ -1786,7 +1850,10 @@ bool captureImage(String targetIP, const char* path, const char* path2) {
 
     if (bytesDownloaded > 0 && (contentLength == -1 || bytesDownloaded == contentLength)) {
       Serial.printf("[EVENT] Save complete. Total: %d bytes saved.\n", bytesDownloaded);
-      if (strcmp(path, IMAGE_PATH) == 0) sdImageReady = true;
+      if (strcmp(path, IMAGE_PATH) == 0) {
+        sdImageReady = true;
+        processStatistic(true); // Increment capture count for primary capture
+      }
       else if (strcmp(path, IMAGE_PATH_MULTI) == 0) sdMultiImageReady = true;
       return true;
     } else {
