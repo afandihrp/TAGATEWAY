@@ -1030,7 +1030,7 @@ lv_obj_t * create_switch(lv_obj_t * parent, const char * name, lv_obj_t ** sw) {
 void chart_draw_event_cb(lv_event_t * e) {
     lv_obj_draw_part_dsc_t * dsc = lv_event_get_draw_part_dsc(e);
     if(dsc->part == LV_PART_TICKS && dsc->id == LV_CHART_AXIS_PRIMARY_X && dsc->text) {
-        const char * days[] = {"7 ago", "6 ago", "5 ago", "4 ago", "3 ago", "2 ago", "1 ago"};
+        const char * days[] = {"1", "2", "3", "4", "5", "6", "7"};
         if(dsc->value >= 0 && dsc->value < 7) {
             lv_snprintf(dsc->text, dsc->text_length, "%s", days[dsc->value]);
         }
@@ -1099,6 +1099,14 @@ void buildStatsScreen() {
   lv_obj_set_style_text_align(lbl_chart, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_pad_bottom(lbl_chart, 5, 0);
 
+  // Calculate dynamic Y range based on max value in history
+  int max_history = 0;
+  for (int i = 1; i <= 7; i++) {
+    int val = doc[String(i)] | 0;
+    if (val > max_history) max_history = val;
+  }
+  int y_max = (max_history < 10) ? 10 : (max_history + (max_history / 5) + 1); // Buffer of 20% or min 10
+
   // Line chart
   lv_obj_t * chart = lv_chart_create(cont);
   lv_obj_set_size(chart, 300, 150); // Slightly smaller to accommodate labels
@@ -1108,8 +1116,8 @@ void buildStatsScreen() {
   lv_obj_set_style_border_color(chart, lv_color_white(), 0);
   lv_obj_set_style_line_width(chart, 2, LV_PART_ITEMS);
 
-  // Add Axis Labels (Y: 0-25, X: 7 days)
-  lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, 25);
+  // Add Axis Labels (Dynamic Y, X: 1-7 days)
+  lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, y_max);
   lv_chart_set_axis_tick(chart, LV_CHART_AXIS_PRIMARY_Y, 10, 5, 6, 2, true, 40);
   
   lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_X, 0, 6);
@@ -1121,14 +1129,14 @@ void buildStatsScreen() {
   lv_obj_set_style_pad_bottom(chart, 20, 0);
 
   lv_chart_series_t * ser = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
-  // Populate chart from JSON (indices 7 down to 1)
-  lv_chart_set_next_value(chart, ser, (int)(doc["7"] | 0));
-  lv_chart_set_next_value(chart, ser, (int)(doc["6"] | 0));
-  lv_chart_set_next_value(chart, ser, (int)(doc["5"] | 0));
-  lv_chart_set_next_value(chart, ser, (int)(doc["4"] | 0));
-  lv_chart_set_next_value(chart, ser, (int)(doc["3"] | 0));
-  lv_chart_set_next_value(chart, ser, (int)(doc["2"] | 0));
+  // Populate chart from JSON (indices 1 to 7)
   lv_chart_set_next_value(chart, ser, (int)(doc["1"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["2"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["3"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["4"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["5"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["6"] | 0));
+  lv_chart_set_next_value(chart, ser, (int)(doc["7"] | 0));
 
   // SD Card Storage Bar
   lv_obj_t * sd_cont = lv_obj_create(cont);
