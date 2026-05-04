@@ -1559,7 +1559,9 @@ bool captureImage(String targetIP, const char* path) {
     while (http.connected() && (bytesDownloaded < contentLength || contentLength == -1)) {
       size_t available = stream->available();
       if (available > 0) {
-        size_t readLen = stream->readBytes(chunkBuffer, min(available, sizeof(chunkBuffer)));
+        // Limit download chunk to 4KB for stability as requested by user
+        size_t maxChunk = 4096;
+        size_t readLen = stream->readBytes(chunkBuffer, min(available, maxChunk));
         file.write(chunkBuffer, readLen);
         bytesDownloaded += readLen;
         
