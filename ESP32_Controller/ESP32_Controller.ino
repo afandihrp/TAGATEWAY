@@ -160,6 +160,7 @@ String res_names_config[30];
 bool toggleHeader = false;
 bool capture_requested = false;
 bool capture_requested_multi = false;
+bool capture_requested_telegram = false;
 uint32_t notify_done_time = 0;
 bool ip_reloaded = false;
 uint32_t ip_notify_time = 0;
@@ -171,6 +172,10 @@ bool servo_control_active = false;
 volatile size_t tele_progress_bytes = 0;
 volatile size_t tele_total_bytes = 0;
 volatile bool tele_updating = false;
+
+// Telegram Bot Polling
+int lastTelegramUpdateId = 0;
+TaskHandle_t telegramPollTaskHandle = NULL;
 
 HTTPClient http;
 WiFiClient streamClient;
@@ -239,6 +244,10 @@ void createWiFiIcon(lv_obj_t * parent);
 void updateWiFiSignal();
 bool sendPhotoToTelegram(String chatId, const char* path);
 void telegramUploadTask(void *pvParameters);
+void telegramPollingTask(void *pvParameters);
+void handleTelegramUpdates();
+void startTelegramPollingTask();
+void sendTelegramMessage(String chatId, String text);
 
 // Simple JSON value extractor
 int getJsonVal(String json, String key) {
@@ -614,12 +623,20 @@ void setup() {
   
   server.begin();
   Serial.println("Web server started on port 80");
+  
+  // Start background Telegram polling on Core 0
+  startTelegramPollingTask();
 }
 
 void loop() {
   server.handleClient();
   lv_timer_handler();
   updateRAMUsage();
+
+  if (capture_requested_telegram) {
+    runGlobalCapture();
+    capture_requested_telegram = false;
+  }
 
   // Polling touch
   uint16_t x, y;
@@ -1082,7 +1099,7 @@ void buildStatsScreen() {
   lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_all(cont, 15, 0);
+  lv_obj_set_style_pad_all(cont, 10, 0); // Reduced from 15
   lv_obj_set_style_border_width(cont, 0, 0);
   lv_obj_set_style_radius(cont, 0, 0);
   lv_obj_set_style_bg_color(cont, lv_color_hex(0x202020), 0);
@@ -1093,13 +1110,13 @@ void buildStatsScreen() {
   lv_label_set_text_fmt(lbl_today, "Camera Triggered Today: %d", (int)(doc["today"] | 0));
   lv_obj_set_width(lbl_today, 360);
   lv_obj_set_style_text_align(lbl_today, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_pad_bottom(lbl_today, 5, 0); // Reduced from 20
+  lv_obj_set_style_pad_bottom(lbl_today, 2, 0); // Reduced from 5
 
   lv_obj_t * lbl_chart = lv_label_create(cont);
   lv_label_set_text(lbl_chart, "Camera triggered last 7 days");
   lv_obj_set_width(lbl_chart, 360);
   lv_obj_set_style_text_align(lbl_chart, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_pad_bottom(lbl_chart, 5, 0);
+  lv_obj_set_style_pad_bottom(lbl_chart, 2, 0); // Reduced from 5
 
   // Calculate dynamic Y range based on max value in history
   int max_history = 0;
@@ -1111,7 +1128,7 @@ void buildStatsScreen() {
 
   // Line chart
   lv_obj_t * chart = lv_chart_create(cont);
-  lv_obj_set_size(chart, 300, 130); // Reduced height from 150
+  lv_obj_set_size(chart, 300, 115); // Reduced height from 130
   lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
   lv_chart_set_point_count(chart, 7);
   lv_obj_set_style_bg_color(chart, lv_color_black(), 0);
@@ -1128,7 +1145,7 @@ void buildStatsScreen() {
   
   // Add some padding to make room for labels
   lv_obj_set_style_pad_left(chart, 40, 0);
-  lv_obj_set_style_pad_bottom(chart, 15, 0); // Reduced from 20
+  lv_obj_set_style_pad_bottom(chart, 10, 0); // Reduced from 15
 
   lv_chart_series_t * ser = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
   // Populate chart from JSON (indices 1 to 7)
@@ -1147,7 +1164,7 @@ void buildStatsScreen() {
   lv_obj_set_style_border_width(sd_cont, 0, 0);
   lv_obj_set_style_pad_all(sd_cont, 0, 0);
   lv_obj_clear_flag(sd_cont, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_pad_top(sd_cont, 30, 0);
+  lv_obj_set_style_pad_top(sd_cont, 10, 0); // Reduced from 30
   lv_obj_set_flex_flow(sd_cont, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(sd_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -1907,12 +1924,24 @@ void telegramUploadTask(void *pvParameters) {
   tele_updating = false;
   Serial.println("[TASK] Telegram upload task finished.");
   telegramTaskHandle = NULL;
+  
+  // Restart polling task
+  startTelegramPollingTask();
+  
   vTaskDelete(NULL);
 }
 
 void runGlobalCapture() {
   if (lastGlobalIP == "") {
     return;
+  }
+  
+  // Free RAM for capture by deleting polling task safely
+  if (telegramPollTaskHandle != NULL) {
+    Serial.println("[RAM] Deleting Telegram Polling task to free memory.");
+    TaskHandle_t temp = telegramPollTaskHandle;
+    telegramPollTaskHandle = NULL;
+    vTaskDelete(temp);
   }
   
   String archivePath = getArchiveFilename();
@@ -1934,6 +1963,10 @@ void runGlobalCapture() {
         0                     // Core 0 (Network)
       );
     }
+  } else {
+    Serial.println("[ERR] Global capture failed.");
+    // Restart polling task since no upload task will be started
+    startTelegramPollingTask();
   }
   notify_done_time = millis();
   if (notify_done_time == 0) notify_done_time = 1;
@@ -2662,4 +2695,145 @@ bool loadConfig() {
   }
 
   return true;
+}
+
+// ==========================================
+// Telegram Bot Polling (Core 0)
+// ==========================================
+
+void startTelegramPollingTask() {
+  if (telegramPollTaskHandle == NULL) {
+    Serial.println("[Telegram] Starting background polling task on Core 0...");
+    xTaskCreatePinnedToCore(
+      telegramPollingTask,
+      "TelegramPoll",
+      8192,
+      NULL,
+      1,
+      &telegramPollTaskHandle,
+      0
+    );
+  }
+}
+
+void telegramPollingTask(void *pvParameters) {
+  while (true) {
+    if (WiFi.status() == WL_CONNECTED && !tele_updating) {
+      handleTelegramUpdates();
+    }
+    
+    if (capture_requested_telegram) {
+      Serial.println("[RAM] Deleting Telegram Polling task to free memory for capture.");
+      telegramPollTaskHandle = NULL;
+      vTaskDelete(NULL); // Task deletes itself
+    }
+    
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+  }
+}
+
+void sendTelegramMessage(String chatId, String text) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient https;
+  String url = "https://api.telegram.org/bot" + botToken + "/sendMessage";
+
+  if (https.begin(client, url)) {
+    https.addHeader("Content-Type", "application/json");
+    StaticJsonDocument<512> doc;
+    doc["chat_id"] = chatId;
+    doc["text"] = text;
+    String payload;
+    serializeJson(doc, payload);
+
+    int httpCode = https.POST(payload);
+    if (httpCode != HTTP_CODE_OK) {
+      Serial.printf("[ERR] Telegram: sendMessage failed (%d)\n", httpCode);
+    }
+    https.end();
+    client.stop();
+  }
+}
+
+void handleTelegramUpdates() {
+  String pendingCmd = "";
+  String pendingChatId = "";
+  String pendingFromName = "";
+
+  // Scope block to ensure SSL client is fully destroyed before we attempt to send a reply
+  {
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient https;
+    String url = "https://api.telegram.org/bot" + botToken + "/getUpdates?offset=" + String(lastTelegramUpdateId + 1) + "&timeout=1";
+
+    if (https.begin(client, url)) {
+      int httpCode = https.GET();
+      if (httpCode == HTTP_CODE_OK) {
+        String payload = https.getString();
+        DynamicJsonDocument doc(4096);
+        DeserializationError error = deserializeJson(doc, payload);
+
+        if (!error && doc["ok"]) {
+          JsonArray results = doc["result"];
+          for (JsonObject update : results) {
+            lastTelegramUpdateId = update["update_id"];
+            if (update.containsKey("message") && update["message"].containsKey("text")) {
+              pendingCmd = update["message"]["text"].as<String>();
+              pendingChatId = update["message"]["chat"]["id"].as<String>();
+              pendingFromName = update["message"]["from"]["first_name"] | "User";
+            }
+          }
+        }
+      }
+      https.end();
+      client.stop();
+    }
+  } // SSL connection closed and memory freed
+
+  // Process the command (if any) using a fresh connection
+  if (pendingCmd != "") {
+    String text = pendingCmd;
+    String chatId = pendingChatId;
+    String fromName = pendingFromName;
+
+    Serial.printf("[Telegram] Command: %s from %s\n", text.c_str(), fromName.c_str());
+
+    if (text == "/start") {
+      String msg = "Hello " + fromName + "!\nAvailable commands:\n";
+      msg += "/devices - List registered cameras\n";
+      msg += "/capture {id} - Capture from a specific camera\n";
+      sendTelegramMessage(chatId, msg);
+    } 
+    else if (text == "/devices") {
+      String msg = "Registered Devices:\n";
+      bool any = false;
+      for (int i = 0; i < 5; i++) {
+        if (devices[i].mac != "") {
+          msg += String(i + 1) + ". MAC: " + devices[i].mac + " (IP: " + devices[i].ip + ")\n";
+          any = true;
+        }
+      }
+      if (!any) msg = "No devices registered.";
+      sendTelegramMessage(chatId, msg);
+    } 
+    else if (text.startsWith("/capture")) {
+      int spaceIdx = text.indexOf(' ');
+      if (spaceIdx == -1) {
+        String msg = "Please specify a camera ID. Use /devices to find IDs.\nExample: /capture 1";
+        sendTelegramMessage(chatId, msg);
+      } else {
+        int id = text.substring(spaceIdx + 1).toInt();
+        if (id >= 1 && id <= 5 && devices[id-1].mac != "") {
+          lastGlobalIP = devices[id-1].ip;
+          sendTelegramMessage(chatId, "Capturing from " + lastGlobalIP + "...");
+          // Signal polling task to exit and loop() to trigger capture
+          capture_requested_telegram = true;
+        } else {
+          sendTelegramMessage(chatId, "Invalid Camera ID. Use /devices to see available cameras.");
+        }
+      }
+    }
+
+  }
 }
