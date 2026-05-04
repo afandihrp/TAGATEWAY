@@ -1026,6 +1026,16 @@ lv_obj_t * create_switch(lv_obj_t * parent, const char * name, lv_obj_t ** sw) {
     return wrapper;
 }
 
+void chart_draw_event_cb(lv_event_t * e) {
+    lv_obj_draw_part_dsc_t * dsc = lv_event_get_draw_part_dsc(e);
+    if(dsc->part == LV_PART_TICKS && dsc->id == LV_CHART_AXIS_PRIMARY_X && dsc->text) {
+        const char * days[] = {"7 ago", "6 ago", "5 ago", "4 ago", "3 ago", "2 ago", "1 ago"};
+        if(dsc->value >= 0 && dsc->value < 7) {
+            lv_snprintf(dsc->text, dsc->text_length, "%s", days[dsc->value]);
+        }
+    }
+}
+
 void buildStatsScreen() {
   // Top Section
   lv_obj_t * top_panel_stats = lv_obj_create(scr_stats);
@@ -1076,12 +1086,24 @@ void buildStatsScreen() {
 
   // Line chart
   lv_obj_t * chart = lv_chart_create(cont);
-  lv_obj_set_size(chart, 360, 160);
+  lv_obj_set_size(chart, 300, 150); // Slightly smaller to accommodate labels
   lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
   lv_chart_set_point_count(chart, 7);
   lv_obj_set_style_bg_color(chart, lv_color_black(), 0);
   lv_obj_set_style_border_color(chart, lv_color_white(), 0);
   lv_obj_set_style_line_width(chart, 2, LV_PART_ITEMS);
+
+  // Add Axis Labels (Y: 0-25, X: 7 days)
+  lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, 25);
+  lv_chart_set_axis_tick(chart, LV_CHART_AXIS_PRIMARY_Y, 10, 5, 6, 2, true, 40);
+  
+  lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_X, 0, 6);
+  lv_chart_set_axis_tick(chart, LV_CHART_AXIS_PRIMARY_X, 10, 5, 7, 1, true, 40);
+  lv_obj_add_event_cb(chart, chart_draw_event_cb, LV_EVENT_DRAW_PART_BEGIN, NULL);
+  
+  // Add some padding to make room for labels
+  lv_obj_set_style_pad_left(chart, 40, 0);
+  lv_obj_set_style_pad_bottom(chart, 20, 0);
 
   lv_chart_series_t * ser = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
   lv_chart_set_next_value(chart, ser, 5);
