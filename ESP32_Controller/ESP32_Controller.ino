@@ -180,7 +180,7 @@ const int buzzerPin = 26; // Moved to 26 to free HSPI MISO (12)
 TaskHandle_t telegramTaskHandle = NULL;
 
 // SD Card Pipeline Configuration
-static uint8_t chunkBuffer[4096];                // 4KB chunk buffer for HTTP/SD streaming
+static uint8_t chunkBuffer[8192];                // 8KB chunk buffer for HTTP/SD/Stream
 const char* IMAGE_PATH       = "/img.jpg";       // Primary camera capture
 const char* IMAGE_PATH_MULTI = "/multi.jpg";     // Multi-camera capture
 bool sdImageReady      = false;
@@ -2358,12 +2358,92 @@ void stopStream() {
 }
 
 size_t readStreamFrame() {
-  Serial.println("[ERR] Streaming disabled (no buffer)");
-  return 0;
+  size_t total = 0;
+  while (streamClient.connected()) {
+    String sizeLine = streamReadLine();
+    sizeLine.trim();
+    if (sizeLine.length() == 0) continue;
+
+    size_t chunkSize = strtoul(sizeLine.c_str(), nullptr, 16);
+    if (chunkSize == 0) { streamReadLine(); break; }
+
+    if (total + chunkSize > sizeof(chunkBuffer)) return 0;
+    if (!streamReadExact(chunkBuffer + total, chunkSize)) return 0;
+
+    total += chunkSize;
+    streamReadLine(); // trailing CRLF
+
+    if (total >= 2 && chunkBuffer[total - 2] == 0xFF && chunkBuffer[total - 1] == 0xD9) break;
+  }
+  return total;
 }
 
 void processStream() {
-  // Streaming disabled due to removal of sharedBuffer to save RAM
+  if (!streamClient.connected()) return;
+
+  static uint16_t last_stream_w = 0;
+  static uint16_t last_stream_h = 0;
+  static bool last_servo_state = false;
+
+  if (streamClient.available()) {
+    String line = streamReadLine(50);
+    line.trim();
+    if (line.length() == 0) return;
+
+    if (!line.startsWith("--")) {
+      unsigned long maybeSize = strtoul(line.c_str(), nullptr, 16);
+      if (maybeSize > 0 && maybeSize < 256) {
+        line = streamReadLine(50);
+        line.trim();
+      }
+      if (!line.startsWith("--")) return;
+    }
+
+    skipStreamHeaders();
+    size_t frameLen = readStreamFrame();
+    if (frameLen < 4) return;
+
+    uint8_t* jpegStart = chunkBuffer;
+    size_t jpegLen = frameLen;
+    for (size_t i = 0; i < frameLen - 1; i++) {
+      if (chunkBuffer[i] == 0xFF && chunkBuffer[i + 1] == 0xD8) {
+        jpegStart = chunkBuffer + i;
+        jpegLen = frameLen - i;
+        break;
+      }
+    }
+
+    uint16_t img_w = 0, img_h = 0;
+    float scale = 1.0f;
+    int available_h = screenHeight - 30 - (servo_control_active ? 40 : 0);
+
+    if (getJpgSize(jpegStart, jpegLen, &img_w, &img_h)) {
+      if (img_w != last_stream_w || img_h != last_stream_h || servo_control_active != last_servo_state) {
+        last_stream_w = img_w;
+        last_stream_h = img_h;
+        last_servo_state = servo_control_active;
+        tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
+      }
+      
+      float ratio_w = (float)screenWidth / img_w;
+      float ratio_h = (float)available_h / img_h;
+      scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
+      
+      int32_t x_off = (screenWidth - (img_w * scale)) / 2;
+      int32_t y_off = 30 + (available_h - (img_h * scale)) / 2;
+      
+      lv_timer_handler(); // Catch touch before drawing
+      tft.drawJpg(jpegStart, jpegLen, x_off, y_off, 0, 0, 0, 0, scale, scale);
+      lv_timer_handler(); // Catch touch after drawing
+    }
+
+    lv_obj_invalidate(top_panel_multi);
+    if (servo_control_active) {
+      if (panel_servo && !lv_obj_has_flag(panel_servo, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_invalidate(panel_servo);
+      }
+    }
+  }
 }
 
 void playCaptureBeep() {
