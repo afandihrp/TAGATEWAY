@@ -11,6 +11,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include <ArduinoJson.h>
+#include <time.h>
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 
@@ -207,7 +208,8 @@ void handleStatus();
 void handleDevices();
 void handleRegister();
 const char* getHtmlUI();
-bool captureImage(String targetIP, const char* path);
+bool captureImage(String targetIP, const char* path, const char* path2 = NULL);
+String getArchiveFilename();
 void runGlobalCapture();
 bool mountSD();
 void unmountSD();
@@ -1484,6 +1486,10 @@ void connectToWiFi() {
       Serial.println("mDNS responder started: http://gateway.local");
       MDNS.addService("http", "tcp", 80);
     }
+
+    // Initialize NTP (Jakarta UTC+7)
+    Serial.println("[NTP] Synchronizing time...");
+    configTime(25200, 0, "pool.ntp.org", "time.nist.gov");
   } else {
     lv_label_set_text(label_status, "WiFi Failed!");
   }
@@ -1626,7 +1632,39 @@ void handleXCLK() {
   server.send(200, "application/json", "{\"status\": \"ok\"}");
 }
 
-bool captureImage(String targetIP, const char* path) {
+String getArchiveFilename() {
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 10)) {
+    char buffer[32];
+    strftime(buffer, sizeof(buffer), "/%d-%m-%y-%H-%M-%S.jpg", &timeinfo);
+    return String(buffer);
+  }
+
+  // Fallback to JSON index
+  Serial.println("[SD] NTP time unavailable, using index fallback.");
+  int index = 0;
+  StaticJsonDocument<128> doc;
+  
+  File file = SD.open("/image_info.json", FILE_READ);
+  if (file) {
+    deserializeJson(doc, file);
+    index = doc["index"] | 0;
+    file.close();
+  }
+  
+  index++;
+  doc["index"] = index;
+  
+  file = SD.open("/image_info.json", FILE_WRITE);
+  if (file) {
+    serializeJson(doc, file);
+    file.close();
+  }
+  
+  return "/" + String(index) + ".jpg";
+}
+
+bool captureImage(String targetIP, const char* path, const char* path2) {
   if (!sdAvailable) {
     Serial.println("[ERR] Capture aborted: SD card not available.");
     return false;
@@ -1657,9 +1695,21 @@ bool captureImage(String targetIP, const char* path) {
 
     File file = SD.open(path, FILE_WRITE);
     if (!file) {
-      Serial.println("[ERR] Failed to open SD file for writing.");
+      Serial.println("[ERR] Failed to open primary SD file for writing.");
       http.end();
       return false;
+    }
+
+    File file2;
+    bool hasArchive = (path2 != NULL);
+    if (hasArchive) {
+      file2 = SD.open(path2, FILE_WRITE);
+      if (!file2) {
+        Serial.println("[WARN] Failed to open archive SD file for writing. Proceeding with primary only.");
+        hasArchive = false;
+      } else {
+        Serial.printf("[INFO] Archiving copy to: %s\n", path2);
+      }
     }
 
     WiFiClient * stream = http.getStreamPtr();
@@ -1673,6 +1723,7 @@ bool captureImage(String targetIP, const char* path) {
         size_t maxChunk = 4096;
         size_t readLen = stream->readBytes(chunkBuffer, min(available, maxChunk));
         file.write(chunkBuffer, readLen);
+        if (hasArchive) file2.write(chunkBuffer, readLen);
         bytesDownloaded += readLen;
         
         // Update download progress UI
@@ -1698,16 +1749,18 @@ bool captureImage(String targetIP, const char* path) {
     }
 
     file.close();
+    if (hasArchive) file2.close();
     http.end();
 
     if (bytesDownloaded > 0 && (contentLength == -1 || bytesDownloaded == contentLength)) {
-      Serial.printf("[EVENT] Save complete. Total: %d bytes saved to %s\n", bytesDownloaded, path);
+      Serial.printf("[EVENT] Save complete. Total: %d bytes saved.\n", bytesDownloaded);
       if (strcmp(path, IMAGE_PATH) == 0) sdImageReady = true;
       else if (strcmp(path, IMAGE_PATH_MULTI) == 0) sdMultiImageReady = true;
       return true;
     } else {
       Serial.printf("[ERR] Download incomplete. Got %d of %d\n", bytesDownloaded, contentLength);
       SD.remove(path); // Clean up partial file
+      if (hasArchive) SD.remove(path2);
       if (strcmp(path, IMAGE_PATH) == 0) sdImageReady = false;
       else if (strcmp(path, IMAGE_PATH_MULTI) == 0) sdMultiImageReady = false;
       return false;
@@ -1753,7 +1806,8 @@ void runGlobalCapture() {
     return;
   }
   
-  if (captureImage(lastGlobalIP, IMAGE_PATH)) {
+  String archivePath = getArchiveFilename();
+  if (captureImage(lastGlobalIP, IMAGE_PATH, archivePath.c_str())) {
     displayImageOrText();
     lv_label_set_text(label_status, lastGlobalIP.c_str());
     playCaptureBeep();
