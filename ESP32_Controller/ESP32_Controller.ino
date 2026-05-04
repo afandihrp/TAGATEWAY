@@ -1121,7 +1121,7 @@ void buildStatsScreen() {
   lv_obj_set_style_border_width(sd_cont, 0, 0);
   lv_obj_set_style_pad_all(sd_cont, 0, 0);
   lv_obj_clear_flag(sd_cont, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_style_pad_top(sd_cont, 15, 0);
+  lv_obj_set_style_pad_top(sd_cont, 30, 0);
   lv_obj_set_flex_flow(sd_cont, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(sd_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
