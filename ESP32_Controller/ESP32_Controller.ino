@@ -1765,14 +1765,20 @@ void displayImageOrText() {
   tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
 
   File f = SD.open(IMAGE_PATH, FILE_READ);
-  if (!f) return;
+  if (!f) {
+    Serial.println("[ERR] displayImage: Could not open IMAGE_PATH");
+    return;
+  }
 
-  uint8_t header[128];
-  f.read(header, 128);
+  // Read larger header to ensure we find SOF marker
+  uint8_t header[1024]; 
+  size_t readLen = f.read(header, sizeof(header));
   f.close();
 
   uint16_t img_w = 0, img_h = 0;
-  if (getJpgSize(header, 128, &img_w, &img_h)) {
+  if (getJpgSize(header, readLen, &img_w, &img_h)) {
+    Serial.printf("[DEBUG] SD JPEG found: %dx%d\n", img_w, img_h);
+    
     float target_w = screenWidth;
     float target_h = screenHeight - 30;
     float ratio_w = target_w / img_w;
@@ -1784,8 +1790,14 @@ void displayImageOrText() {
     if (x_offset < 0) x_offset = 0;
     if (y_offset < 30) y_offset = 30;
 
-    tft.drawJpgFile(SD, IMAGE_PATH, x_offset, y_offset, 0, 0, 0, 0, scale, scale);
+    Serial.printf("[DEBUG] Render: x=%d, y=%d, scale=%.2f\n", x_offset, y_offset, scale);
+
+    if (!tft.drawJpgFile(SD, IMAGE_PATH, x_offset, y_offset, 0, 0, 0, 0, scale, scale)) {
+      Serial.println("[ERR] drawJpgFile failed!");
+    }
     lv_label_set_text_fmt(label_status, "Cam: %s", lastGlobalIP.c_str());
+  } else {
+    Serial.println("[ERR] getJpgSize failed to parse SD file header.");
   }
 
   // Force LVGL to redraw the top header on top of the image
@@ -1819,22 +1831,35 @@ void displayMultiImageOrText() {
   tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
 
   File f = SD.open(IMAGE_PATH_MULTI, FILE_READ);
-  if (!f) return;
+  if (!f) {
+    Serial.println("[ERR] displayMulti: Could not open IMAGE_PATH_MULTI");
+    return;
+  }
 
-  uint8_t header[128];
-  f.read(header, 128);
+  uint8_t header[1024]; 
+  size_t readLen = f.read(header, sizeof(header));
   f.close();
 
   uint16_t img_w = 0, img_h = 0;
-  if (getJpgSize(header, 128, &img_w, &img_h)) {
+  if (getJpgSize(header, readLen, &img_w, &img_h)) {
+    Serial.printf("[DEBUG] SD Multi JPEG found: %dx%d\n", img_w, img_h);
+
     float ratio_w = (float)screenWidth / img_w;
     float ratio_h = (float)available_h / img_h;
     float scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
 
     int32_t x_offset = (screenWidth - (img_w * scale)) / 2;
     int32_t y_offset = 30 + (available_h - (img_h * scale)) / 2;
+    if (x_offset < 0) x_offset = 0;
+    if (y_offset < 30) y_offset = 30;
 
-    tft.drawJpgFile(SD, IMAGE_PATH_MULTI, x_offset, y_offset, 0, 0, 0, 0, scale, scale);
+    Serial.printf("[DEBUG] Multi Render: x=%d, y=%d, scale=%.2f\n", x_offset, y_offset, scale);
+
+    if (!tft.drawJpgFile(SD, IMAGE_PATH_MULTI, x_offset, y_offset, 0, 0, 0, 0, scale, scale)) {
+      Serial.println("[ERR] drawJpgFile (Multi) failed!");
+    }
+  } else {
+    Serial.println("[ERR] getJpgSize failed to parse Multi SD file header.");
   }
   lv_obj_invalidate(top_panel_multi);
   lv_timer_handler();
