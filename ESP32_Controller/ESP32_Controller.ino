@@ -1008,6 +1008,34 @@ void buildStatsScreen() {
   lv_chart_set_next_value(chart, ser, 4);
   lv_chart_set_next_value(chart, ser, 20);
   lv_chart_set_next_value(chart, ser, 12);
+
+  // SD Card Storage Bar
+  lv_obj_t * sd_cont = lv_obj_create(cont);
+  lv_obj_set_size(sd_cont, 360, 30);
+  lv_obj_set_style_bg_opa(sd_cont, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(sd_cont, 0, 0);
+  lv_obj_set_style_pad_all(sd_cont, 0, 0);
+  lv_obj_clear_flag(sd_cont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_pad_top(sd_cont, 15, 0);
+  lv_obj_set_flex_flow(sd_cont, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(sd_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  lv_obj_t * sd_label = lv_label_create(sd_cont);
+  lv_label_set_text(sd_label, "SD Card: ");
+  lv_obj_set_style_text_color(sd_label, lv_color_white(), 0);
+
+  lv_obj_t * sd_bar = lv_bar_create(sd_cont);
+  lv_obj_set_size(sd_bar, 180, 15);
+  lv_obj_set_style_radius(sd_bar, 0, 0); // Square corners
+  lv_obj_set_style_radius(sd_bar, 0, LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(sd_bar, lv_color_hex(0x555555), 0);
+  lv_obj_set_style_bg_color(sd_bar, lv_palette_main(LV_PALETTE_BLUE), LV_PART_INDICATOR);
+  lv_bar_set_range(sd_bar, 0, 8000);
+  lv_bar_set_value(sd_bar, 1, LV_ANIM_OFF); // Dummy data
+
+  lv_obj_t * sd_val_label = lv_label_create(sd_cont);
+  lv_label_set_text(sd_val_label, " 1/8000kb");
+  lv_obj_set_style_text_color(sd_val_label, lv_color_white(), 0);
 }
 
 void buildDevicesScreen() {
