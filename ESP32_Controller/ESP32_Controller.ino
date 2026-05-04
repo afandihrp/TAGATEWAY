@@ -365,6 +365,15 @@ void setup() {
   tft.setRotation(1); // Landscape
   tft.fillScreen(TFT_BLACK); // Prevent white flash on boot
 
+  // Diagnostic Boot Screen
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(10, 10);
+  tft.println("System Diagnostic...");
+  
+  tft.setCursor(10, 40);
+  tft.print("SD Card: ");
+
   // [2] Initialize SD Card (HSPI)
   // Ensure VSPI pins are stable before touching HSPI
   delay(100); 
@@ -373,11 +382,58 @@ void setup() {
     Serial.printf("[SD] SUCCESS: Max Size %llu MB detected. System Ready.\n", totalSize);
     sdAvailable = true;
     
-    // NEW: Load dynamic credentials from SD
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.println("OK");
+    
+    // Load credentials from config.json
     loadConfig();
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(10, 70);
+    tft.print("WiFi Credential: ");
+    if (ssid.length() > 0) {
+      tft.setTextColor(TFT_GREEN, TFT_BLACK);
+      tft.println("OK");
+    } else {
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.println("MISSING");
+    }
+    
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(10, 100);
+    tft.print("Telegram Credential: ");
+    if (botToken.length() > 0 && targetChatId.length() > 0) {
+      tft.setTextColor(TFT_GREEN, TFT_BLACK);
+      tft.println("OK");
+    } else {
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.println("MISSING");
+    }
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(10, 130);
+    tft.println("WiFi: Connecting...");
+    
+    delay(1000);
+    tft.fillScreen(TFT_BLACK); // Clear for LVGL
   } else {
     Serial.println("[SD] Mount Failed. Storage disabled.");
     sdAvailable = false;
+    
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println("FAIL");
+    tft.setCursor(10, 70);
+    tft.println("System Halted.");
+    tft.setCursor(10, 100);
+    tft.println("Tap Screen to Reboot");
+    
+    while(true) {
+      uint16_t x, y;
+      if (tft.getTouch(&x, &y)) {
+        ESP.restart();
+      }
+      delay(50);
+    }
   }
 
   // Proceed with system load
