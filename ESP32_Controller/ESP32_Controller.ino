@@ -207,7 +207,6 @@ void handleImage();
 void handleStatus();
 void handleDevices();
 void handleRegister();
-const char* getHtmlUI();
 bool captureImage(String targetIP, const char* path, const char* path2 = NULL);
 String getArchiveFilename();
 void runGlobalCapture();
@@ -1610,8 +1609,19 @@ void handleRegister() {
 }
 
 void handleRoot() {
-  // Use send_P for large flash-based strings
-  server.send(200, "text/html", getHtmlUI());
+  if (sdAvailable) {
+    File file = SD.open("/index.html", FILE_READ);
+    if (file && !file.isDirectory()) {
+      Serial.println("[HTTP] Serving index.html from SD Card.");
+      server.streamFile(file, "text/html");
+      file.close();
+      return;
+    }
+  }
+
+  // Fallback if SD card is missing or file not found
+  Serial.println("[HTTP] SD index.html missing.");
+  server.send(404, "text/plain", "Error: /index.html not found on SD card.");
 }
 
 void handleControl() {
@@ -2304,147 +2314,6 @@ void buildIpSelectScreen() {
       }, LV_EVENT_CLICKED, NULL);
     }
   }
-}
-
-const char* getHtmlUI() {
-  return R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ESP32 Camera</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: sans-serif; background: #202020; padding: 15px; color: #eee; }
-        .card { background: #2c2c2c; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); max-width: 600px; margin: auto; padding: 20px; border: 1px solid #444; }
-        h1 { text-align: center; color: #1a73e8; margin-bottom: 20px; font-size: 24px; }
-        .btn { display: block; width: 100%; background: #1a73e8; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; margin-bottom: 20px; }
-        .img-box { background: #111; border-radius: 8px; min-height: 200px; display: flex; align-items: center; justify-content: center; margin-bottom: 20px; overflow: hidden; border: 1px solid #444; }
-        img { max-width: 100%; height: auto; display: block; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .item { background: #333; padding: 10px; border-radius: 8px; border-left: 3px solid #1a73e8; }
-        label { display: block; font-size: 12px; color: #aaa; margin-bottom: 4px; }
-        input { width: 100%; padding: 6px; border: 1px solid #444; border-radius: 4px; background: #222; color: #fff; }
-        .toggle { display: flex; gap: 4px; }
-        .t-btn { flex: 1; font-size: 11px; padding: 6px; border: 1px solid #444; border-radius: 4px; background: #222; color: #eee; cursor: pointer; }
-        .t-btn.active { background: #34a853; color: white; border-color: #34a853; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; color: #eee; }
-        th { background: #1a73e8; color: white; padding: 10px; text-align: left; }
-        td { padding: 10px; border-bottom: 1px solid #444; }
-        #msg { position: fixed; top: 10px; right: 10px; padding: 10px; border-radius: 5px; color: white; display: none; z-index: 100; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h1>📷 Camera Control</h1>
-        <button class="btn" onclick="cap()">CAPTURE PHOTO</button>
-        <div class="img-box" id="view">No image.</div>
-        <div class="grid" id="items"></div>
-    </div>
-
-    <div class="card" style="margin-top: 20px;">
-        <h1>📱 Devices</h1>
-        <table>
-            <thead>
-                <tr>
-                    <th>No.</th>
-                    <th>MAC</th>
-                    <th>IP</th>
-                    <th>TEST</th>
-                </tr>
-            </thead>
-            <tbody id="dev-list"></tbody>
-        </table>
-    </div>
-
-    <div id="msg"></div>
-    <script>
-        const cfg = [
-            { id: 'framesize', n: 'Capture Framesize', t: 'num', min: 0, max: 21 },
-            { id: 'stream_framesize', n: 'Stream Framesize', t: 'num', min: 0, max: 21 },
-            { id: 'quality', n: 'Quality', t: 'range', min: 0, max: 63 },
-            { id: 'brightness', n: 'Brightness', t: 'range', min: -2, max: 2 },
-            { id: 'contrast', n: 'Contrast', t: 'range', min: -2, max: 2 },
-            { id: 'saturation', n: 'Saturation', t: 'range', min: -2, max: 2 },
-            { id: 'led_intensity', n: 'LED Flash', t: 'range', min: 0, max: 255 },
-            { id: 'awb', n: 'Auto White Balance', t: 'tog' },
-            { id: 'aec', n: 'Auto Exposure', t: 'tog' },
-            { id: 'agc', n: 'Auto Gain', t: 'tog' },
-            { id: 'hmirror', n: 'Mirror', t: 'tog' },
-            { id: 'vflip', n: 'Flip', t: 'tog' }
-        ];
-        function init() {
-            const container = document.getElementById('items');
-            cfg.forEach(i => {
-                const div = document.createElement('div');
-                div.className = 'item';
-                div.innerHTML = `<label>${i.n}</label>`;
-                if (i.t === 'tog') {
-                    div.innerHTML += `<div class="toggle" id="g-${i.id}"><button class="t-btn" onclick="set('${i.id}',1)">ON</button><button class="t-btn" onclick="set('${i.id}',0)">OFF</button></div>`;
-                } else {
-                    div.innerHTML += `<input type="${i.t==='range'?'range':'number'}" id="${i.id}" min="${i.min}" max="${i.max}" onchange="send('${i.id}')">`;
-                }
-                container.appendChild(div);
-            });
-            fetch('/status').then(r => r.json()).then(d => {
-                cfg.forEach(i => {
-                    const el = document.getElementById(i.id);
-                    if (el) el.value = d[i.id];
-                    if (i.t === 'tog') upd(i.id, d[i.id]);
-                });
-            });
-            loadDevices();
-        }
-        function loadDevices() {
-            fetch('/devices').then(r => r.json()).then(d => {
-                const list = document.getElementById('dev-list');
-                list.innerHTML = '';
-                d.forEach((dev, idx) => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td>${idx + 1}</td>
-                        <td>${dev.mac}</td>
-                        <td>${dev.ip}</td>
-                        <td><button class="t-btn active" style="padding:4px 8px;" onclick="ping('${dev.ip}')">PING</button></td>
-                    `;
-                    list.appendChild(tr);
-                });
-            });
-        }
-        function ping(ip) {
-            alert('Pinging ' + ip + '...');
-        }
-        function upd(id, v) {
-            const bs = document.getElementById('g-'+id).querySelectorAll('button');
-            bs[0].className = v == 1 ? 't-btn active' : 't-btn';
-            bs[1].className = v == 0 ? 't-btn active' : 't-btn';
-        }
-        function send(id) {
-            const v = document.getElementById(id).value;
-            fetch(`/control?var=${id}&val=${v}`).then(ok);
-        }
-        function set(id, v) {
-            fetch(`/control?var=${id}&val=${v}`).then(() => { upd(id, v); ok(); });
-        }
-        function cap() {
-            fetch('/capture').then(r => r.json()).then(d => {
-                if (d.status === 'ok') {
-                    document.getElementById('view').innerHTML = `<img src="/image?t=${Date.now()}">`;
-                    ok();
-                }
-            });
-        }
-        function ok() {
-            const m = document.getElementById('msg');
-            m.innerText = 'Updated!'; m.style.background = '#34a853'; m.style.display = 'block';
-            setTimeout(() => m.style.display = 'none', 2000);
-        }
-        window.onload = init;
-    </script>
-</body>
-</html>
-)rawliteral";
 }
 
 // ==========================================
