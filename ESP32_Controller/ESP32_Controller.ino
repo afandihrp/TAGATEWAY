@@ -163,6 +163,11 @@ bool is_streaming = false;
 bool stream_paused = false;
 bool servo_control_active = false;
 
+// Telegram Progress Tracking
+volatile size_t tele_progress_bytes = 0;
+volatile size_t tele_total_bytes = 0;
+volatile bool tele_updating = false;
+
 HTTPClient http;
 WiFiClient streamClient;
 WiFiUDP udp;
@@ -587,6 +592,29 @@ void loop() {
     }
   }
   was_touched = is_touched;
+
+  // Real-time Telegram Upload Progress (Core 1)
+  static bool last_tele_updating = false;
+  static size_t last_tele_progress = 0;
+
+  if (tele_updating && current_screen == 0 && label_status) {
+    if (tele_progress_bytes != last_tele_progress || !last_tele_updating) {
+      if (tele_progress_bytes == 0) {
+        lv_label_set_text(label_status, "tele: connecting...");
+      } else {
+        lv_label_set_text_fmt(label_status, "tele: %d/%dk", (int)(tele_progress_bytes/1024), (int)(tele_total_bytes/1024));
+      }
+      last_tele_progress = tele_progress_bytes;
+    }
+    last_tele_updating = true;
+  } else if (!tele_updating && last_tele_updating) {
+    // Restore UI when Telegram task finishes
+    if (current_screen == 0 && label_status) {
+      lv_label_set_text_fmt(label_status, "Cam: %s", lastGlobalIP.c_str());
+    }
+    last_tele_updating = false;
+    last_tele_progress = 0;
+  }
 
   if (current_screen == 4 && is_streaming && !stream_paused) {
     processStream();
@@ -1583,7 +1611,11 @@ void handleCapture() {
 
 void telegramUploadTask(void *pvParameters) {
   Serial.println("[TASK] Telegram upload task started.");
+  tele_progress_bytes = 0;
+  tele_total_bytes = 0;
+  tele_updating = true;
   sendPhotoToTelegram(targetChatId, IMAGE_PATH);
+  tele_updating = false;
   Serial.println("[TASK] Telegram upload task finished.");
   telegramTaskHandle = NULL;
   vTaskDelete(NULL);
@@ -1631,6 +1663,7 @@ bool sendPhotoToTelegram(String chatId, const char* path) {
       return false;
     }
     size_t imageSize = file.size();
+    tele_total_bytes = imageSize; // Set total early for UI
 
     Serial.printf("\n--- Telegram Upload Attempt %d/%d ---\n", attempt, maxRetries);
     
@@ -1669,6 +1702,7 @@ bool sendPhotoToTelegram(String chatId, const char* path) {
     client.print(head);
     
     bool uploadFailed = false;
+    size_t bytesSent = 0;
     while (file.available()) {
       size_t toRead = min((size_t)file.available(), sizeof(telegramChunkBuffer));
       file.read(telegramChunkBuffer, toRead);
@@ -1676,6 +1710,8 @@ bool sendPhotoToTelegram(String chatId, const char* path) {
         uploadFailed = true;
         break;
       }
+      bytesSent += toRead;
+      tele_progress_bytes = bytesSent; // Core 0 update
       delay(1);
     }
     file.close();
