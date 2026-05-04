@@ -10,20 +10,21 @@
 #include <FS.h>
 #include <SD.h>
 #include <SPI.h>
+#include <ArduinoJson.h>
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 
-// WiFi Configuration
-const char* ssid = "BatuKhan";
-const char* password = "momoygemoy";
+// WiFi Configuration (Loaded from SD)
+String ssid = "";
+String password = "";
 
 // SD Card Configuration (HSPI)
 const int sdCS = 5;
 SPIClass sdSPI(HSPI);
 
-// Telegram ConfigurationIC 74AHC125? 
-const String botToken = "7910361449:AAFMjzZxkDQAg1y6oeIJ0gVapBXbd2e11DU";
-const String targetChatId = "1275988890"; // REPLACE WITH YOUR ACTUAL CHAT ID
+// Telegram Configuration (Loaded from SD)
+String botToken = "";
+String targetChatId = "";
 
 // Display Configuration
 static const uint32_t screenWidth  = 480; // Landscape
@@ -208,6 +209,7 @@ bool captureImage(String targetIP, const char* path);
 void runGlobalCapture();
 bool mountSD();
 void unmountSD();
+bool loadConfig();
 void displayImageOrText();
 void updateRAMUsage(bool force = false);
 void buildConfigScreen();
@@ -368,6 +370,9 @@ void setup() {
     uint64_t totalSize = SD.totalBytes() / (1024 * 1024);
     Serial.printf("[SD] SUCCESS: Max Size %llu MB detected. System Ready.\n", totalSize);
     sdAvailable = true;
+    
+    // NEW: Load dynamic credentials from SD
+    loadConfig();
   } else {
     Serial.println("[SD] Mount Failed. Storage disabled.");
     sdAvailable = false;
@@ -1348,9 +1353,9 @@ void buildConfigScreen() {
 }
 
 void connectToWiFi() {
-  Serial.printf("Connecting to WiFi: %s\n", ssid);
+  Serial.printf("Connecting to WiFi: %s\n", ssid.c_str());
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.begin(ssid.c_str(), password.c_str());
   
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 20) {
@@ -2393,7 +2398,7 @@ void unmountSD() {
   Serial.println("[SD] Unmounting and powering off HSPI...");
   SD.end();
   sdSPI.end(); // Stop the SPI hardware entirely
-  
+
   // Explicitly hold CS HIGH to avoid floating bus state
   pinMode(sdCS, OUTPUT);
   digitalWrite(sdCS, HIGH);
@@ -2404,4 +2409,43 @@ void unmountSD() {
   pinMode(14, INPUT); // SCK
 
   Serial.println("[SD] Shutdown complete. HSPI pins released.");
+}
+
+bool loadConfig() {
+  Serial.println("[SD] Loading config.json...");
+  File file = SD.open("/config.json");
+  if (!file) {
+    Serial.println("[SD] Config file missing! Using default credentials.");
+    return false;
+  }
+
+  // Use a buffer for JSON parsing
+  StaticJsonDocument<512> doc;
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+
+  if (error) {
+    Serial.printf("[SD] JSON parse failed: %s. Using default credentials.\n", error.c_str());
+    return false;
+  }
+
+  // Load variables safely if they exist in the JSON
+  if (doc.containsKey("ssid")) {
+    ssid = doc["ssid"].as<String>();
+    Serial.printf("[SD] WiFi SSID loaded: %s\n", ssid.c_str());
+  }
+  if (doc.containsKey("password")) {
+    password = doc["password"].as<String>();
+    Serial.println("[SD] WiFi Password loaded.");
+  }
+  if (doc.containsKey("botToken")) {
+    botToken = doc["botToken"].as<String>();
+    Serial.println("[SD] Telegram Bot Token loaded.");
+  }
+  if (doc.containsKey("chatId")) {
+    targetChatId = doc["chatId"].as<String>();
+    Serial.printf("[SD] Telegram Chat ID loaded: %s\n", targetChatId.c_str());
+  }
+
+  return true;
 }
