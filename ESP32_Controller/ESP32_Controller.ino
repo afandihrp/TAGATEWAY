@@ -1091,7 +1091,7 @@ void buildStatsScreen() {
   lv_label_set_text_fmt(lbl_today, "Camera Triggered Today: %d", (int)(doc["today"] | 0));
   lv_obj_set_width(lbl_today, 360);
   lv_obj_set_style_text_align(lbl_today, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_pad_bottom(lbl_today, 20, 0);
+  lv_obj_set_style_pad_bottom(lbl_today, 5, 0); // Reduced from 20
 
   lv_obj_t * lbl_chart = lv_label_create(cont);
   lv_label_set_text(lbl_chart, "Camera triggered last 7 days");
@@ -1109,7 +1109,7 @@ void buildStatsScreen() {
 
   // Line chart
   lv_obj_t * chart = lv_chart_create(cont);
-  lv_obj_set_size(chart, 300, 150); // Slightly smaller to accommodate labels
+  lv_obj_set_size(chart, 300, 130); // Reduced height from 150
   lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
   lv_chart_set_point_count(chart, 7);
   lv_obj_set_style_bg_color(chart, lv_color_black(), 0);
@@ -1126,7 +1126,7 @@ void buildStatsScreen() {
   
   // Add some padding to make room for labels
   lv_obj_set_style_pad_left(chart, 40, 0);
-  lv_obj_set_style_pad_bottom(chart, 20, 0);
+  lv_obj_set_style_pad_bottom(chart, 15, 0); // Reduced from 20
 
   lv_chart_series_t * ser = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
   // Populate chart from JSON (indices 1 to 7)
