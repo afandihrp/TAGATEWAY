@@ -27,6 +27,8 @@ SPIClass sdSPI(HSPI);
 // Telegram Configuration (Loaded from SD)
 String botToken = "";
 String targetChatId = "";
+bool startTeleUpload = false;
+uint32_t lastPollingTime = 0;
 
 // Display Configuration
 static const uint32_t screenWidth  = 480; // Landscape
@@ -709,15 +711,60 @@ void setup() {
   
   server.begin();
   Serial.println("Web server started on port 80");
-  
-  // Start background Telegram polling on Core 0
-  startTelegramPollingTask();
 }
 
 void loop() {
   server.handleClient();
   lv_timer_handler();
   updateRAMUsage();
+
+  // Telegram Centralized Control Algorithm
+  bool isUploading = false;
+  if (telegramTaskHandle != NULL) {
+    if (eTaskGetState(telegramTaskHandle) != eDeleted) {
+      isUploading = true;
+    } else {
+      telegramTaskHandle = NULL;
+    }
+  }
+
+  if (startTeleUpload) {
+    if (!isUploading) {
+      Serial.println("[MAIN] Launching Telegram Upload task...");
+      xTaskCreatePinnedToCore(
+        telegramUploadTask,
+        "TelegramTask",
+        8192,
+        NULL,
+        1,
+        &telegramTaskHandle,
+        0
+      );
+      startTeleUpload = false; // Reset flag after launching
+    }
+  } else {
+    bool isPolling = false;
+    if (telegramPollTaskHandle != NULL) {
+      if (eTaskGetState(telegramPollTaskHandle) != eDeleted) {
+        isPolling = true;
+      } else {
+        telegramPollTaskHandle = NULL;
+      }
+    }
+
+    if (!isPolling && !isUploading && (millis() - lastPollingTime > 2000)) {
+      lastPollingTime = millis();
+      xTaskCreatePinnedToCore(
+        telegramPollingTask,
+        "TelegramPoll",
+        12288,
+        NULL,
+        1,
+        &telegramPollTaskHandle,
+        0
+      );
+    }
+  }
 
   if (capture_requested_telegram && !is_capturing_global) {
     capture_requested_telegram = false; // Clear BEFORE calling to avoid race
@@ -2010,10 +2057,8 @@ void telegramUploadTask(void *pvParameters) {
   Serial.println("[TASK] Telegram upload task finished.");
   telegramTaskHandle = NULL;
   
-  is_capturing_global = false; // Release BEFORE restarting polling
+  is_capturing_global = false; // Release BEFORE task exit
   if (captureMutex) xSemaphoreGive(captureMutex); // Release mutex
-  
-  startTelegramPollingTask();   // Now safe to restart polling
   vTaskDelete(NULL);
 }
 
@@ -2051,28 +2096,14 @@ void runGlobalCapture() {
     lv_label_set_text(label_status, lastGlobalIP.c_str());
     playCaptureBeep();
     
-    // Upload to Telegram in background
-    Serial.println("External trigger: Starting Telegram background task...");
-    if (telegramTaskHandle == NULL) {
-      xTaskCreatePinnedToCore(
-        telegramUploadTask,   // Task function
-        "TelegramTask",       // Task name
-        8192,                 // Increased from 5KB to 8KB for SSL context
-        NULL,                 // Parameters
-        1,                    // Priority
-        &telegramTaskHandle,  // Task handle
-        0                     // Core 0 (Network)
-      );
-      // is_capturing_global stays true; mutex held — task releases both
-    } else {
-      is_capturing_global = false;
-      if (captureMutex) xSemaphoreGive(captureMutex);
-    }
+    // Upload to Telegram in background via Core 1 Loop
+    Serial.println("External trigger: Signaling Telegram upload...");
+    startTeleUpload = true; 
+    // is_capturing_global stays true; mutex held — task releases both
   } else {
     Serial.println("[ERR] Global capture failed.");
     is_capturing_global = false;
     if (captureMutex) xSemaphoreGive(captureMutex);
-    startTelegramPollingTask();
   }
   notify_done_time = millis();
   if (notify_done_time == 0) notify_done_time = 1;
@@ -2695,19 +2726,15 @@ void startTelegramPollingTask() {
 }
 
 void telegramPollingTask(void *pvParameters) {
-  while (true) {
-    if (WiFi.status() == WL_CONNECTED && !tele_updating) {
-      handleTelegramUpdates();
-    }
-    
-    if (capture_requested_telegram) {
-      Serial.println("[RAM] Deleting Telegram Polling task to free memory for capture.");
-      telegramPollTaskHandle = NULL;
-      vTaskDelete(NULL); // Task deletes itself
-    }
-    
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
+  if (WiFi.status() == WL_CONNECTED && !tele_updating) {
+    handleTelegramUpdates();
   }
+  
+  // Note: if capture_requested_telegram was set inside handleTelegramUpdates,
+  // the loop() will pick it up and runGlobalCapture() which will trigger startTeleUpload.
+  
+  telegramPollTaskHandle = NULL;
+  vTaskDelete(NULL);
 }
 
 void sendTelegramMessage(String chatId, String text) {
