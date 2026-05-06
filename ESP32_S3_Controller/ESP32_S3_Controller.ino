@@ -1961,7 +1961,8 @@ bool captureImage(String targetIP, const char* path, const char* path2) {
     while (httpLocal.connected() && (bytesDownloaded < (size_t)contentLength || contentLength == -1)) {
       size_t available = stream->available();
       if (available > 0) {
-        size_t readLen = stream->readBytes(sharedBuffer + bytesDownloaded, min(available, (size_t)(MAX_BUFFER_SIZE - bytesDownloaded)));
+        size_t maxChunk = 512; // Limit to 2KB per chunk as requested
+        size_t readLen = stream->readBytes(sharedBuffer + bytesDownloaded, min(min(available, maxChunk), (size_t)(MAX_BUFFER_SIZE - bytesDownloaded)));
         bytesDownloaded += readLen;
         
         // Update download progress UI
