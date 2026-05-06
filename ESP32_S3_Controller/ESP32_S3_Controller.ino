@@ -165,7 +165,6 @@ bool capture_requested = false;
 bool capture_requested_multi = false;
 bool capture_requested_telegram = false;
 volatile bool is_capturing_global = false;
-SemaphoreHandle_t captureMutex = NULL;
 uint32_t notify_done_time = 0;
 bool ip_reloaded = false;
 uint32_t ip_notify_time = 0;
@@ -688,10 +687,6 @@ void setup() {
   switchScreen(0);
   displayImageOrText();
 
-  // Initialize Semaphore for Capture Synchronization
-  captureMutex = xSemaphoreCreateBinary();
-  xSemaphoreGive(captureMutex); // Initialize as "available"
-
   // Connect to WiFi
   connectToWiFi();
   
@@ -752,7 +747,7 @@ void loop() {
       }
     }
 
-    if (!isPolling && !isUploading && (millis() - lastPollingTime > 2000)) {
+    if (!isPolling && (millis() - lastPollingTime > 2000)) {
       lastPollingTime = millis();
       xTaskCreatePinnedToCore(
         telegramPollingTask,
@@ -1961,7 +1956,7 @@ bool captureImage(String targetIP, const char* path, const char* path2) {
     while (httpLocal.connected() && (bytesDownloaded < (size_t)contentLength || contentLength == -1)) {
       size_t available = stream->available();
       if (available > 0) {
-        size_t maxChunk = 512; // Limit to 2KB per chunk as requested
+        size_t maxChunk = 4096; // Limit to 4KB per chunk as requested
         size_t readLen = stream->readBytes(sharedBuffer + bytesDownloaded, min(min(available, maxChunk), (size_t)(MAX_BUFFER_SIZE - bytesDownloaded)));
         bytesDownloaded += readLen;
         
@@ -2059,36 +2054,17 @@ void telegramUploadTask(void *pvParameters) {
   telegramTaskHandle = NULL;
   
   is_capturing_global = false; // Release BEFORE task exit
-  if (captureMutex) xSemaphoreGive(captureMutex); // Release mutex
   vTaskDelete(NULL);
 }
 
 void runGlobalCapture() {
   if (is_capturing_global) return;
   
-  // Take mutex — if upload task still holds it, we wait (or skip)
-  if (captureMutex != NULL) {
-    if (xSemaphoreTake(captureMutex, 0) != pdTRUE) {
-      Serial.println("[WARN] Capture skipped: previous upload still in progress.");
-      return;
-    }
-  }
-  
   is_capturing_global = true;
 
   if (lastGlobalIP == "") {
     is_capturing_global = false;
-    if (captureMutex) xSemaphoreGive(captureMutex);
     return;
-  }
-  
-  // Free RAM for capture by deleting polling task safely
-  if (telegramPollTaskHandle != NULL) {
-    Serial.println("[RAM] Deleting Telegram Polling task to free memory.");
-    TaskHandle_t temp = telegramPollTaskHandle;
-    telegramPollTaskHandle = NULL;
-    vTaskDelete(temp);
-    vTaskDelay(100 / portTICK_PERIOD_MS); // Let IDLE task clean up stack
   }
   
   String archivePath = getArchiveFilename();
@@ -2100,11 +2076,10 @@ void runGlobalCapture() {
     // Upload to Telegram in background via Core 1 Loop
     Serial.println("External trigger: Signaling Telegram upload...");
     startTeleUpload = true; 
-    // is_capturing_global stays true; mutex held — task releases both
+    // is_capturing_global stays true; task releases it
   } else {
     Serial.println("[ERR] Global capture failed.");
     is_capturing_global = false;
-    if (captureMutex) xSemaphoreGive(captureMutex);
   }
   notify_done_time = millis();
   if (notify_done_time == 0) notify_done_time = 1;
