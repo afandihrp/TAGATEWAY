@@ -379,8 +379,12 @@ void setup() {
   tft.fillScreen(TFT_BLACK); // Prevent white flash on boot
 
 
-  // [1] Initialize Display (LovyanGFX) on SPI2
-  Serial.println("1. Initializing Display...");
+  // [1] Initialize PSRAM Early
+  Serial.println("1. Initializing PSRAM...");
+  initPSRAM();
+
+  // [2] Initialize Display (LovyanGFX) on SPI2
+  Serial.println("2. Initializing Display...");
   tft.init();
   tft.setRotation(1); // Landscape
   tft.fillScreen(TFT_BLACK); // Prevent white flash on boot
@@ -391,10 +395,22 @@ void setup() {
   tft.setCursor(10, 10);
   tft.println("System Diagnostic...");
   
+  // Display PSRAM Status
   tft.setCursor(10, 40);
+  tft.print("PSRAM: ");
+  if (psramFound()) {
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.printf("OK (%d MB)\n", ESP.getPsramSize() / (1024 * 1024));
+  } else {
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println("NOT FOUND");
+  }
+  
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(10, 70);
   tft.print("SD Card: ");
 
-  // [2] Initialize SD Card (SPI3)
+  // [3] Initialize SD Card (SPI3)
   // Ensure SPI2 pins are stable before touching SPI3
   delay(100); 
   if (mountSD()) {
@@ -409,7 +425,7 @@ void setup() {
     loadConfig();
 
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setCursor(10, 70);
+    tft.setCursor(10, 100);
     tft.print("WiFi Credential: ");
     if (ssid.length() > 0) {
       tft.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -420,7 +436,7 @@ void setup() {
     }
     
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setCursor(10, 100);
+    tft.setCursor(10, 130);
     tft.print("Telegram Credential: ");
     if (botToken.length() > 0 && targetChatId.length() > 0) {
       tft.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -430,11 +446,43 @@ void setup() {
       tft.println("MISSING");
     }
 
+    // [4] Connect to WiFi and BLOCK until connected
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setCursor(10, 130);
+    tft.setCursor(10, 160);
     tft.println("WiFi: Connecting...");
     
-    delay(1000);
+    connectToWiFi();
+    
+    uint32_t startAttempt = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+      if (millis() - startAttempt > 20000) { // 20s timeout for diagnostic screen
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.setCursor(10, 190);
+        tft.println("WiFi Timeout! Rebooting...");
+        delay(3000);
+        ESP.restart();
+      }
+    }
+    
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(10, 190);
+    tft.println("WiFi CONNECTED!");
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+
+    // Initialize mDNS
+    if (MDNS.begin("gateway")) {
+      Serial.println("mDNS responder started: http://gateway.local");
+      MDNS.addService("http", "tcp", 80);
+    }
+
+    // Initialize NTP (Jakarta UTC+7)
+    Serial.println("[NTP] Synchronizing time...");
+    configTime(25200, 0, "pool.ntp.org", "time.nist.gov");
+    
+    delay(2000);
     tft.fillScreen(TFT_BLACK); // Clear for LVGL
   } else {
     Serial.println("[SD] Mount Failed. Storage disabled.");
@@ -442,9 +490,9 @@ void setup() {
     
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("FAIL");
-    tft.setCursor(10, 70);
-    tft.println("System Halted.");
     tft.setCursor(10, 100);
+    tft.println("System Halted.");
+    tft.setCursor(10, 130);
     tft.println("Tap Screen to Reboot");
     
     while(true) {
@@ -455,10 +503,6 @@ void setup() {
       delay(50);
     }
   }
-
-  // Proceed with system load
-  Serial.println("2. Initializing PSRAM...");
-  initPSRAM();
 
   // Initialize LVGL
   Serial.println("3. Initializing LVGL...");
@@ -1545,31 +1589,6 @@ void connectToWiFi() {
   Serial.printf("Connecting to WiFi: %s\n", ssid.c_str());
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid.c_str(), password.c_str());
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-    lv_timer_handler();
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("\nWiFi connected!\nIP Address: %s\n", WiFi.localIP().toString().c_str());
-    lv_label_set_text_fmt(label_status, "IP: %s", WiFi.localIP().toString().c_str());
-
-    // Initialize mDNS
-    if (MDNS.begin("gateway")) {
-      Serial.println("mDNS responder started: http://gateway.local");
-      MDNS.addService("http", "tcp", 80);
-    }
-
-    // Initialize NTP (Jakarta UTC+7)
-    Serial.println("[NTP] Synchronizing time...");
-    configTime(25200, 0, "pool.ntp.org", "time.nist.gov");
-  } else {
-    lv_label_set_text(label_status, "WiFi Failed!");
-  }
 }
 
 void initPSRAM() {
