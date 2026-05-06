@@ -1952,37 +1952,40 @@ bool captureImage(String targetIP, const char* path, const char* path2) {
     WiFiClient * stream = httpLocal.getStreamPtr();
     size_t bytesDownloaded = 0;
     uint32_t startMs = millis();
+    const size_t CHUNK = 4096; // Optimized sweet spot for ESP32 TCP buffer
+    size_t remaining = (contentLength > 0) ? (size_t)contentLength : (MAX_BUFFER_SIZE - bytesDownloaded);
 
-    while (httpLocal.connected() && (bytesDownloaded < (size_t)contentLength || contentLength == -1)) {
-      size_t available = stream->available();
-      if (available > 0) {
-        size_t maxChunk = 4096; // Limit to 4KB per chunk as requested
-        size_t readLen = stream->readBytes(sharedBuffer + bytesDownloaded, min(min(available, maxChunk), (size_t)(MAX_BUFFER_SIZE - bytesDownloaded)));
-        bytesDownloaded += readLen;
-        
-        // Update download progress UI
-        lv_obj_t* targetLabel = (strcmp(path, IMAGE_PATH) == 0) ? label_status : label_notify_multi;
-        if (targetLabel) {
-          static uint32_t last_down_ui = 0;
-          if (millis() - last_down_ui > 150) {
-            lv_label_set_text_fmt(targetLabel, "DOWN: %d/%dk", bytesDownloaded/1024, contentLength/1024);
-            lv_timer_handler();
-            last_down_ui = millis();
-          }
+    while (httpLocal.connected() && bytesDownloaded < (contentLength > 0 ? (size_t)contentLength : MAX_BUFFER_SIZE)) {
+      size_t toRead = min(CHUNK, (contentLength > 0 ? (size_t)contentLength : MAX_BUFFER_SIZE) - bytesDownloaded);
+      size_t got = stream->readBytes(sharedBuffer + bytesDownloaded, toRead);
+
+      if (got == 0) {
+        // Genuine stall - check timeout
+        if (millis() - startMs > CAPTURE_TIMEOUT_MS) {
+          Serial.println("[ERR] Capture timeout during download.");
+          break;
         }
-        
-        startMs = millis(); // Reset timeout on activity
+        vTaskDelay(1); // Yield more robustly than delay(1)
+        continue;
       }
-      
-      if (millis() - startMs > CAPTURE_TIMEOUT_MS) {
-        Serial.println("[ERR] Capture timeout during download.");
-        break;
+
+      bytesDownloaded += got;
+      startMs = millis(); // Reset timeout on activity
+
+      // Update download progress UI
+      lv_obj_t* targetLabel = (strcmp(path, IMAGE_PATH) == 0) ? label_status : label_notify_multi;
+      if (targetLabel) {
+        static uint32_t last_down_ui = 0;
+        if (millis() - last_down_ui > 150) {
+          lv_label_set_text_fmt(targetLabel, "DOWN: %d/%dk", bytesDownloaded/1024, contentLength/1024);
+          lv_timer_handler();
+          last_down_ui = millis();
+        }
       }
+
       lv_timer_handler(); // Keep UI alive
-      delay(1);
     }
     httpLocal.end();
-
     if (bytesDownloaded > 0 && (contentLength == -1 || bytesDownloaded == (size_t)contentLength)) {
       sharedBufferSize = bytesDownloaded;
       Serial.printf("[EVENT] Download complete. Total: %d bytes in RAM.\n", sharedBufferSize);
@@ -2790,6 +2793,7 @@ void handleTelegramUpdates() {
       String msg = "Hello " + fromName + "!\nAvailable commands:\n";
       msg += "/devices - List registered cameras\n";
       msg += "/capture {id} - Capture from a specific camera\n";
+      msg += "/getstat - Show camera trigger statistics\n";
       sendTelegramMessage(chatId, msg);
     } 
     else if (text == "/devices") {
@@ -2804,6 +2808,22 @@ void handleTelegramUpdates() {
       if (!any) msg = "No devices registered.";
       sendTelegramMessage(chatId, msg);
     } 
+    else if (text == "/getstat") {
+      int count = 0;
+      if (sdAvailable) {
+        File file = SD.open("/statistic.json", FILE_READ);
+        if (file) {
+          StaticJsonDocument<512> doc;
+          DeserializationError error = deserializeJson(doc, file);
+          if (!error) {
+            count = doc["today"] | 0;
+          }
+          file.close();
+        }
+      }
+      String msg = "Camera triggered today: " + String(count);
+      sendTelegramMessage(chatId, msg);
+    }
     else if (text.startsWith("/capture")) {
       int spaceIdx = text.indexOf(' ');
       if (spaceIdx == -1) {
