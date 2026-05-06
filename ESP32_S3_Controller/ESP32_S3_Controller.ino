@@ -190,8 +190,10 @@ const int buzzerPin = 4; // Moved to 4 for S3 layout
 
 TaskHandle_t telegramTaskHandle = NULL;
 
-// SD Card Pipeline Configuration
-static uint8_t chunkBuffer[8192];                // 8KB chunk buffer for HTTP/SD/Stream
+// Shared buffer for both still images and video stream
+uint8_t* sharedBuffer = nullptr;
+size_t sharedBufferSize = 0;
+const size_t MAX_BUFFER_SIZE = 1024 * 1024;      // 1MB Shared Framebuffer in PSRAM
 const char* IMAGE_PATH       = "/img.jpg";       // Primary camera capture
 const char* IMAGE_PATH_MULTI = "/multi.jpg";     // Multi-camera capture
 bool sdImageReady      = false;
@@ -199,7 +201,6 @@ bool sdMultiImageReady = false;
 bool sdAvailable       = false;
 
 const uint32_t CAPTURE_TIMEOUT_MS = 10000;       // 10 second timeout for picture fetching
-uint8_t telegramChunkBuffer[1024];               // Permanent 1KB buffer for SSL DMA writes
 
 // Function declarations
 void connectToWiFi();
@@ -508,6 +509,14 @@ void setup() {
   // Initialize LVGL
   Serial.println("3. Initializing LVGL...");
   lv_init();
+
+  // [4] Allocate Shared Framebuffer in PSRAM
+  sharedBuffer = (uint8_t*)heap_caps_malloc(MAX_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+  if (sharedBuffer) {
+    Serial.printf("Shared Framebuffer allocated: %d KB\n", MAX_BUFFER_SIZE / 1024);
+  } else {
+    Serial.println("FATAL: Shared Framebuffer allocation FAILED!");
+  }
   
   // Allocate LVGL draw buffer
   size_t buf_lines = 5; // Ultra-minimal lines to save RAM for SSL
@@ -1846,18 +1855,18 @@ void processStatistic(bool increment) {
 }
 
 bool captureImage(String targetIP, const char* path, const char* path2) {
-  if (!sdAvailable) {
-    Serial.println("[ERR] Capture aborted: SD card not available.");
-    return false;
-  }
-
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[ERR] Capture failed: WiFi disconnected.");
     return false;
   }
 
+  if (!sharedBuffer) {
+    Serial.println("[ERR] Shared buffer not allocated!");
+    return false;
+  }
+
   String url = "http://" + targetIP + "/capture";
-  Serial.printf("[INFO] Fetching image from: %s to %s\n", url.c_str(), path);
+  Serial.printf("[INFO] Fetching image from: %s\n", url.c_str());
 
   // Set initial status
   lv_obj_t* startLabel = (strcmp(path, IMAGE_PATH) == 0) ? label_status : label_notify_multi;
@@ -1875,37 +1884,20 @@ bool captureImage(String targetIP, const char* path, const char* path2) {
     int contentLength = httpLocal.getSize();
     Serial.printf("[INFO] Image size: %d bytes\n", contentLength);
 
-    File file = SD.open(path, FILE_WRITE);
-    if (!file) {
-      Serial.println("[ERR] Failed to open primary SD file for writing.");
+    if (contentLength > MAX_BUFFER_SIZE) {
+      Serial.println("[ERR] Image too large for shared buffer.");
       httpLocal.end();
       return false;
     }
 
-    File file2;
-    bool hasArchive = (path2 != NULL);
-    if (hasArchive) {
-      file2 = SD.open(path2, FILE_WRITE);
-      if (!file2) {
-        Serial.println("[WARN] Failed to open archive SD file for writing. Proceeding with primary only.");
-        hasArchive = false;
-      } else {
-        Serial.printf("[INFO] Archiving copy to: %s\n", path2);
-      }
-    }
-
     WiFiClient * stream = httpLocal.getStreamPtr();
-    int bytesDownloaded = 0;
+    size_t bytesDownloaded = 0;
     uint32_t startMs = millis();
 
-    while (httpLocal.connected() && (bytesDownloaded < contentLength || contentLength == -1)) {
+    while (httpLocal.connected() && (bytesDownloaded < (size_t)contentLength || contentLength == -1)) {
       size_t available = stream->available();
       if (available > 0) {
-        // Limit download chunk to 4KB for stability as requested by user
-        size_t maxChunk = 4096;
-        size_t readLen = stream->readBytes(chunkBuffer, min(available, maxChunk));
-        file.write(chunkBuffer, readLen);
-        if (hasArchive) file2.write(chunkBuffer, readLen);
+        size_t readLen = stream->readBytes(sharedBuffer + bytesDownloaded, min(available, (size_t)(MAX_BUFFER_SIZE - bytesDownloaded)));
         bytesDownloaded += readLen;
         
         // Update download progress UI
@@ -1929,30 +1921,47 @@ bool captureImage(String targetIP, const char* path, const char* path2) {
       lv_timer_handler(); // Keep UI alive
       delay(1);
     }
-
-    file.close();
-    if (hasArchive) file2.close();
     httpLocal.end();
 
-    if (bytesDownloaded > 0 && (contentLength == -1 || bytesDownloaded == contentLength)) {
-      Serial.printf("[EVENT] Save complete. Total: %d bytes saved.\n", bytesDownloaded);
+    if (bytesDownloaded > 0 && (contentLength == -1 || bytesDownloaded == (size_t)contentLength)) {
+      sharedBufferSize = bytesDownloaded;
+      Serial.printf("[EVENT] Download complete. Total: %d bytes in RAM.\n", sharedBufferSize);
+
+      // Now save to SD card if available
+      if (sdAvailable) {
+        File file = SD.open(path, FILE_WRITE);
+        if (file) {
+          file.write(sharedBuffer, sharedBufferSize);
+          file.close();
+          Serial.printf("[SD] Saved to %s\n", path);
+        }
+
+        if (path2 != NULL) {
+          File file2 = SD.open(path2, FILE_WRITE);
+          if (file2) {
+            file2.write(sharedBuffer, sharedBufferSize);
+            file2.close();
+            Serial.printf("[SD] Archived to %s\n", path2);
+          }
+        }
+      }
+
       if (strcmp(path, IMAGE_PATH) == 0) {
         sdImageReady = true;
-        processStatistic(true); // Increment capture count for primary capture
+        processStatistic(true); 
       }
       else if (strcmp(path, IMAGE_PATH_MULTI) == 0) sdMultiImageReady = true;
+      
       return true;
     } else {
       Serial.printf("[ERR] Download incomplete. Got %d of %d\n", bytesDownloaded, contentLength);
-      SD.remove(path); // Clean up partial file
-      if (hasArchive) SD.remove(path2);
       if (strcmp(path, IMAGE_PATH) == 0) sdImageReady = false;
       else if (strcmp(path, IMAGE_PATH_MULTI) == 0) sdMultiImageReady = false;
+      sharedBufferSize = 0;
       return false;
     }
   } else {
     Serial.printf("[ERR] HTTP request failed, code: %d\n", httpCode);
-    http.end();
     return false;
   }
 }
@@ -2052,37 +2061,27 @@ void runGlobalCapture() {
   if (notify_done_time == 0) notify_done_time = 1;
 }
 
-bool sendPhotoToTelegram(String chatId, const char* path) {
-  if (!sdAvailable) return false;
-  
+bool sendPhotoToTelegram(String chatId, const char* unused_path) {
+  if (sharedBufferSize == 0 || !sharedBuffer) {
+    Serial.println("[ERR] Telegram: No image in RAM to send.");
+    return false;
+  }
+
   const char* host = "api.telegram.org";
   const int port = 443;
-  int maxRetries = 3;
+  int maxRetries = 2;
   
-  for (int attempt = 1; attempt <= maxRetries; attempt++) {
-    File file = SD.open(path, FILE_READ);
-    if (!file) {
-      Serial.printf("[ERR] Telegram: Could not open %s\n", path);
-      return false;
-    }
-    size_t imageSize = file.size();
-    tele_total_bytes = imageSize; // Set total early for UI
+  tele_total_bytes = sharedBufferSize;
 
+  for (int attempt = 1; attempt <= maxRetries; attempt++) {
     Serial.printf("\n--- Telegram Upload Attempt %d/%d ---\n", attempt, maxRetries);
     
     WiFiClientSecure client;
     client.setInsecure();
     client.setTimeout(15000);
     
-    Serial.printf("Connecting to %s:%d...\n", host, port);
     if (!client.connect(host, port)) {
-      Serial.println("[ERR] Telegram: Connection failed.");
-      file.close();
-      client.stop(); // Explicit stop
-      if (attempt < maxRetries) {
-        delay(2000);
-        continue;
-      }
+      if (attempt < maxRetries) { delay(1000); continue; }
       return false;
     }
 
@@ -2095,63 +2094,41 @@ bool sendPhotoToTelegram(String chatId, const char* path) {
                 + "Content-Type: image/jpeg\r\n\r\n";
     String tail = "\r\n--" + boundary + "--\r\n";
     
-    uint32_t totalLength = head.length() + imageSize + tail.length();
+    uint32_t contentLength = head.length() + sharedBufferSize + tail.length();
     
     client.println("POST /bot" + botToken + "/sendPhoto HTTP/1.1");
     client.println("Host: " + String(host));
-    client.println("Content-Length: " + String(totalLength));
+    client.println("Content-Length: " + String(contentLength));
     client.println("Content-Type: multipart/form-data; boundary=" + boundary);
     client.println();
     
     client.print(head);
     
-    bool uploadFailed = false;
-    size_t bytesSent = 0;
-    while (file.available()) {
-      size_t toRead = min((size_t)file.available(), sizeof(telegramChunkBuffer));
-      file.read(telegramChunkBuffer, toRead);
-      if (client.write(telegramChunkBuffer, toRead) != toRead) {
-        uploadFailed = true;
-        break;
-      }
-      bytesSent += toRead;
-      tele_progress_bytes = bytesSent; // Core 0 update
-      delay(1);
-    }
-    file.close();
-    
-    if (uploadFailed) {
-      client.stop();
-      if (attempt < maxRetries) {
-        delay(2000);
-        continue;
-      }
-      return false;
+    // Send directly from sharedBuffer in chunks
+    size_t pos = 0;
+    size_t chunkSize = 4096;
+    while (pos < sharedBufferSize) {
+      size_t toWrite = min(chunkSize, sharedBufferSize - pos);
+      client.write(sharedBuffer + pos, toWrite);
+      pos += toWrite;
+      tele_progress_bytes = pos;
+      yield();
     }
     
     client.print(tail);
     
-    String response = "";
-    uint32_t startMs = millis();
-    while (client.connected() && millis() - startMs < 15000) {
+    // Wait for response
+    uint32_t start = millis();
+    while (client.connected() && millis() - start < 5000) {
       if (client.available()) {
-        response += (char)client.read();
-        startMs = millis();
+        String line = client.readStringUntil('\n');
+        if (line.indexOf("\"ok\":true") > 0) {
+          client.stop();
+          return true;
+        }
       }
-      delay(1);
     }
     client.stop();
-
-    if (response.indexOf("\"ok\":true") > 0) {
-      Serial.println("[OK] Telegram: Photo sent successfully.");
-      return true;
-    } else {
-      Serial.println("[ERR] Telegram: Server returned error.");
-      if (attempt < maxRetries) {
-        delay(2000);
-        continue;
-      }
-    }
   }
   return false;
 }
@@ -2168,28 +2145,14 @@ void handleCaptureMulti() {
 }
 
 void handleImage() {
-  if (!sdAvailable || !sdImageReady) {
-    server.send(404, "application/json", "{\"error\": \"No image on SD\"}");
+  if (sharedBufferSize == 0 || !sharedBuffer) {
+    server.send(404, "application/json", "{\"error\": \"No image in RAM\"}");
     return;
   }
-  
-  File f = SD.open(IMAGE_PATH, FILE_READ);
-  if (!f) {
-    server.send(500, "application/json", "{\"error\": \"SD read fail\"}");
-    return;
-  }
-  
-  size_t fileSize = f.size();
-  server.setContentLength(fileSize);
+  server.setContentLength(sharedBufferSize);
   server.sendHeader("Content-Type", "image/jpeg");
-  server.send(200, "image/jpeg", ""); // Send header
-
-  while (f.available()) {
-    size_t toRead = min((size_t)f.available(), sizeof(chunkBuffer));
-    f.read(chunkBuffer, toRead);
-    server.sendContent((const char*)chunkBuffer, toRead);
-  }
-  f.close();
+  server.send(200, "image/jpeg", ""); 
+  server.sendContent((const char*)sharedBuffer, sharedBufferSize);
 }
 
 bool getJpgSize(const uint8_t* data, size_t len, uint16_t *w, uint16_t *h) {
@@ -2212,47 +2175,10 @@ bool getJpgSize(const uint8_t* data, size_t len, uint16_t *w, uint16_t *h) {
   return false;
 }
 
-// Custom DataWrapper for SD reading with progress reporting
-class SDProgressWrapper : public lgfx::DataWrapper {
-public:
-  File file;
-  lv_obj_t* label;
-  size_t total;
-  size_t read_bytes;
-  uint32_t last_ui;
-
-  SDProgressWrapper(const char* path, lv_obj_t* l) : label(l), read_bytes(0), last_ui(0) {
-    file = SD.open(path, FILE_READ);
-    total = file ? file.size() : 0;
-    need_transaction = true;
-  }
-  
-  ~SDProgressWrapper() { if (file) file.close(); }
-
-  int read(uint8_t* buf, uint32_t len) override {
-    if (!file) return 0;
-    size_t r = file.read(buf, len);
-    read_bytes += r;
-    if (label && total > 0) {
-      if (millis() - last_ui > 150) {
-        lv_label_set_text_fmt(label, "RNDR: %d/%dk", (int)(read_bytes/1024), (int)(total/1024));
-        lv_timer_handler();
-        last_ui = millis();
-      }
-    }
-    return r;
-  }
-
-  void skip(int32_t len) override { if (file) file.seek(file.position() + len); }
-  bool seek(uint32_t offset) override { return file ? file.seek(offset) : false; }
-  void close() override { if (file) file.close(); }
-  int32_t tell(void) override { return file ? file.position() : 0; }
-};
-
 void displayImageOrText() {
   if (current_screen != 0) return; // Only draw on image screen
 
-  if (!sdAvailable || !sdImageReady) {
+  if (sharedBufferSize == 0 || !sharedBuffer) {
     tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
     lv_label_set_text(label_status, "Waiting...");
     return;
@@ -2261,21 +2187,8 @@ void displayImageOrText() {
   // Clear the image area
   tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
 
-  File f = SD.open(IMAGE_PATH, FILE_READ);
-  if (!f) {
-    Serial.println("[ERR] displayImage: Could not open IMAGE_PATH");
-    return;
-  }
-
-  // Read larger header to ensure we find SOF marker
-  uint8_t header[1024]; 
-  size_t readLen = f.read(header, sizeof(header));
-  f.close();
-
   uint16_t img_w = 0, img_h = 0;
-  if (getJpgSize(header, readLen, &img_w, &img_h)) {
-    Serial.printf("[DEBUG] SD JPEG found: %dx%d\n", img_w, img_h);
-    
+  if (getJpgSize(sharedBuffer, sharedBufferSize, &img_w, &img_h)) {
     float target_w = screenWidth;
     float target_h = screenHeight - 30;
     float ratio_w = target_w / img_w;
@@ -2287,20 +2200,13 @@ void displayImageOrText() {
     if (x_offset < 0) x_offset = 0;
     if (y_offset < 30) y_offset = 30;
 
-    Serial.printf("[DEBUG] Render: x=%d, y=%d, scale=%.2f\n", x_offset, y_offset, scale);
-
-    SDProgressWrapper wrapper(IMAGE_PATH, label_status);
-    if (wrapper.file) {
-      if (!tft.drawJpg(&wrapper, x_offset, y_offset, 0, 0, 0, 0, scale, scale)) {
-        Serial.println("[ERR] drawJpg failed!");
-      }
-    } else {
-      Serial.println("[ERR] Could not open IMAGE_PATH for rendering.");
+    if (!tft.drawJpg(sharedBuffer, sharedBufferSize, x_offset, y_offset, 0, 0, 0, 0, scale, scale)) {
+      Serial.println("[ERR] drawJpg from RAM failed!");
     }
-    
     lv_label_set_text_fmt(label_status, "Cam: %s", lastGlobalIP.c_str());
   } else {
-    Serial.println("[ERR] getJpgSize failed to parse SD file header.");
+    Serial.println("[ERR] Invalid JPEG in shared buffer.");
+    lv_label_set_text(label_status, "JPEG Error");
   }
 
   // Force LVGL to redraw the top header on top of the image
@@ -2325,50 +2231,24 @@ bool captureMultiImage() {
 
 void displayMultiImageOrText() {
   if (current_screen != 4) return;
-
-  if (!sdAvailable || !sdMultiImageReady) {
-    tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
-    return;
-  }
-
+  
   int available_h = screenHeight - 30 - (servo_control_active ? 40 : 0);
   tft.fillRect(0, 30, screenWidth, screenHeight - 30, tft.color565(32, 32, 32));
+  
+  if (sharedBuffer && sharedBufferSize > 0) {
+    uint16_t img_w = 0, img_h = 0;
+    float scale = 1.0f;
+    if (getJpgSize(sharedBuffer, sharedBufferSize, &img_w, &img_h)) {
+      float ratio_w = (float)screenWidth / img_w;
+      float ratio_h = (float)available_h / img_h;
+      scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
 
-  File f = SD.open(IMAGE_PATH_MULTI, FILE_READ);
-  if (!f) {
-    Serial.println("[ERR] displayMulti: Could not open IMAGE_PATH_MULTI");
-    return;
-  }
-
-  uint8_t header[1024]; 
-  size_t readLen = f.read(header, sizeof(header));
-  f.close();
-
-  uint16_t img_w = 0, img_h = 0;
-  if (getJpgSize(header, readLen, &img_w, &img_h)) {
-    Serial.printf("[DEBUG] SD Multi JPEG found: %dx%d\n", img_w, img_h);
-
-    float ratio_w = (float)screenWidth / img_w;
-    float ratio_h = (float)available_h / img_h;
-    float scale = (ratio_w < ratio_h) ? ratio_w : ratio_h;
-
-    int32_t x_offset = (screenWidth - (img_w * scale)) / 2;
-    int32_t y_offset = 30 + (available_h - (img_h * scale)) / 2;
-    if (x_offset < 0) x_offset = 0;
-    if (y_offset < 30) y_offset = 30;
-
-    Serial.printf("[DEBUG] Multi Render: x=%d, y=%d, scale=%.2f\n", x_offset, y_offset, scale);
-
-    SDProgressWrapper wrapper(IMAGE_PATH_MULTI, label_notify_multi);
-    if (wrapper.file) {
-      if (!tft.drawJpg(&wrapper, x_offset, y_offset, 0, 0, 0, 0, scale, scale)) {
-        Serial.println("[ERR] drawJpg (Multi) failed!");
-      }
-    } else {
-      Serial.println("[ERR] Could not open IMAGE_PATH_MULTI for rendering.");
+      int32_t x_off = (screenWidth - (img_w * scale)) / 2;
+      int32_t y_off = 30 + (available_h - (img_h * scale)) / 2;
+      tft.drawJpg(sharedBuffer, sharedBufferSize, x_off, y_off, 0, 0, 0, 0, scale, scale);
     }
   } else {
-    Serial.println("[ERR] getJpgSize failed to parse Multi SD file header.");
+    lv_label_set_text(label_notify_multi, "Waiting...");
   }
   lv_obj_invalidate(top_panel_multi);
   lv_timer_handler();
@@ -2377,10 +2257,8 @@ void displayMultiImageOrText() {
   tft.drawRoundRect(screenWidth - 35, 110, 30, 100, 5, TFT_WHITE);
   tft.setTextSize(2);
   tft.setTextColor(TFT_WHITE);
-  tft.setCursor(12, 150);
-  tft.print("<");
-  tft.setCursor(screenWidth - 25, 150);
-  tft.print(">");
+  tft.setCursor(12, 150); tft.print("<");
+  tft.setCursor(screenWidth - 25, 150); tft.print(">");
 }
 
 
@@ -2615,13 +2493,13 @@ size_t readStreamFrame() {
     size_t chunkSize = strtoul(sizeLine.c_str(), nullptr, 16);
     if (chunkSize == 0) { streamReadLine(); break; }
 
-    if (total + chunkSize > sizeof(chunkBuffer)) return 0;
-    if (!streamReadExact(chunkBuffer + total, chunkSize)) return 0;
+    if (total + chunkSize > MAX_BUFFER_SIZE) return 0;
+    if (!streamReadExact(sharedBuffer + total, chunkSize)) return 0;
 
     total += chunkSize;
     streamReadLine(); // trailing CRLF
 
-    if (total >= 2 && chunkBuffer[total - 2] == 0xFF && chunkBuffer[total - 1] == 0xD9) break;
+    if (total >= 2 && sharedBuffer[total - 2] == 0xFF && sharedBuffer[total - 1] == 0xD9) break;
   }
   return total;
 }
@@ -2651,11 +2529,11 @@ void processStream() {
     size_t frameLen = readStreamFrame();
     if (frameLen < 4) return;
 
-    uint8_t* jpegStart = chunkBuffer;
+    uint8_t* jpegStart = sharedBuffer;
     size_t jpegLen = frameLen;
     for (size_t i = 0; i < frameLen - 1; i++) {
-      if (chunkBuffer[i] == 0xFF && chunkBuffer[i + 1] == 0xD8) {
-        jpegStart = chunkBuffer + i;
+      if (sharedBuffer[i] == 0xFF && sharedBuffer[i + 1] == 0xD8) {
+        jpegStart = sharedBuffer + i;
         jpegLen = frameLen - i;
         break;
       }
