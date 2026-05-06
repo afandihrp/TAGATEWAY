@@ -736,7 +736,7 @@ void loop() {
         "TelegramTask",
         8192,
         NULL,
-        1,
+        0,
         &telegramTaskHandle,
         0
       );
@@ -2156,13 +2156,13 @@ bool sendPhotoToTelegram(String chatId, const char* unused_path) {
     
     // Send directly from sharedBuffer in chunks
     size_t pos = 0;
-    size_t chunkSize = 4096;
+    size_t chunkSize = 512;
     while (pos < sharedBufferSize) {
       size_t toWrite = min(chunkSize, sharedBufferSize - pos);
       client.write(sharedBuffer + pos, toWrite);
       pos += toWrite;
       tele_progress_bytes = pos;
-      delay(1); // Yield more robustly than yield() during long uploads
+      vTaskDelay(pdMS_TO_TICKS(1)); // Yield more robustly than yield() during long uploads
     }
     
     client.print(tail);
@@ -2177,7 +2177,8 @@ bool sendPhotoToTelegram(String chatId, const char* unused_path) {
           return true;
         }
       }
-      delay(1); // Yield to IDLE task to prevent WDT trigger
+      vTaskDelay(pdMS_TO_TICKS(10));
+      // vTaskDelay(100 / portTICK_PERIOD_MS); // Yield to IDLE task to prevent WDT trigger
     }
     client.stop();
   }
