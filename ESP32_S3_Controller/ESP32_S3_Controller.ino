@@ -169,6 +169,7 @@ uint32_t ip_notify_time = 0;
 bool is_streaming = false;
 bool stream_paused = false;
 bool servo_control_active = false;
+uint32_t psram_show_time = 0; // Toggle for RAM/PSRAM monitor
 
 // Telegram Progress Tracking
 volatile size_t tele_progress_bytes = 0;
@@ -601,6 +602,8 @@ void setup() {
   lv_label_set_text(label_ram, "RAM: --");
   lv_obj_set_style_text_color(label_ram, lv_color_white(), 0);
   lv_obj_align(label_ram, LV_ALIGN_RIGHT_MID, -45, 0);
+  lv_obj_add_flag(label_ram, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(label_ram, ram_label_cb, LV_EVENT_CLICKED, NULL);
 
   createWiFiIcon(top_panel, 0);
 
@@ -791,20 +794,37 @@ void loop() {
   }
 }
 
+void ram_label_cb(lv_event_t * e) {
+  psram_show_time = millis();
+  updateRAMUsage(true);
+}
+
 void updateRAMUsage(bool force) {
   static uint32_t last_update = 0;
   if (force || millis() - last_update > 2000) {
     last_update = millis();
-    uint32_t free_h = ESP.getFreeHeap();
-    uint32_t total_h = ESP.getHeapSize();
-    uint32_t used_h = total_h - free_h;
+    
+    String ram_text;
+    if (millis() - psram_show_time < 2000) {
+      // Show PSRAM info
+      uint32_t total_ps = ESP.getPsramSize();
+      uint32_t free_ps = ESP.getFreePsram();
+      uint32_t used_ps = total_ps - free_ps;
+      ram_text = "PSRAM: " + String(used_ps / 1024) + "/" + String(total_ps / 1024) + " KB";
+    } else {
+      // Show Internal RAM info
+      uint32_t free_h = ESP.getFreeHeap();
+      uint32_t total_h = ESP.getHeapSize();
+      uint32_t used_h = total_h - free_h;
+      ram_text = "RAM: " + String(used_h / 1024) + "/" + String(total_h / 1024) + " KB";
+    }
     
     updateWiFiSignal();
 
     if (current_screen == 4) {
-      lv_label_set_text_fmt(label_ram_multi, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+      lv_label_set_text(label_ram_multi, ram_text.c_str());
     } else if (current_screen == 2) {
-      lv_label_set_text_fmt(label_ram_stats, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+      lv_label_set_text(label_ram_stats, ram_text.c_str());
       
       // Update SD Storage Stats
       if (sdAvailable) {
@@ -833,9 +853,9 @@ void updateRAMUsage(bool force) {
       lv_obj_clean(scr_devices);
       buildDevicesScreen();
       updateWiFiSignal(); // Apply colors to the newly created bars
-      lv_label_set_text_fmt(label_ram_devices, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+      lv_label_set_text(label_ram_devices, ram_text.c_str());
     } else {
-      lv_label_set_text_fmt(label_ram, "RAM: %u/%u KB", used_h/1024, total_h/1024);
+      lv_label_set_text(label_ram, ram_text.c_str());
       if (current_screen == 0) {
         if (toggleHeader) {
           lv_label_set_text_fmt(label_status, "Cam: %s", lastGlobalIP.c_str());
@@ -1147,6 +1167,8 @@ void buildStatsScreen() {
   lv_label_set_text(label_ram_stats, "RAM: --");
   lv_obj_set_style_text_color(label_ram_stats, lv_color_white(), 0);
   lv_obj_align(label_ram_stats, LV_ALIGN_RIGHT_MID, -45, 0);
+  lv_obj_add_flag(label_ram_stats, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(label_ram_stats, ram_label_cb, LV_EVENT_CLICKED, NULL);
 
   createWiFiIcon(top_panel_stats, 2);
 
@@ -1263,6 +1285,8 @@ void buildDevicesScreen() {
   lv_label_set_text(label_ram_devices, "RAM: --");
   lv_obj_set_style_text_color(label_ram_devices, lv_color_white(), 0);
   lv_obj_align(label_ram_devices, LV_ALIGN_RIGHT_MID, -45, 0);
+  lv_obj_add_flag(label_ram_devices, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(label_ram_devices, ram_label_cb, LV_EVENT_CLICKED, NULL);
 
   createWiFiIcon(top_panel_dev, 3);
 
@@ -1442,6 +1466,8 @@ void buildMultiScreen() {
   lv_label_set_text(label_ram_multi, "RAM: --");
   lv_obj_set_style_text_color(label_ram_multi, lv_color_white(), 0);
   lv_obj_align(label_ram_multi, LV_ALIGN_RIGHT_MID, -45, 0);
+  lv_obj_add_flag(label_ram_multi, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(label_ram_multi, ram_label_cb, LV_EVENT_CLICKED, NULL);
 
   createWiFiIcon(top_panel_multi, 4);
 
