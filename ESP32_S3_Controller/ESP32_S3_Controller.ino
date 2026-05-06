@@ -14,6 +14,7 @@
 #include <time.h>
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
+#include <mbedtls/platform.h>
 
 // WiFi Configuration (Loaded from SD)
 String ssid = "";
@@ -207,6 +208,16 @@ void connectToWiFi();
 void controlCamera(const char* var, int val);
 void setXCLK(int xclk);
 void initPSRAM();
+
+// Custom mbedtls allocators to use PSRAM
+void* mbedtls_psram_calloc(size_t n, size_t size) {
+    return heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
+void mbedtls_psram_free(void* ptr) {
+    heap_caps_free(ptr);
+}
+
 void initDisplay();
 void handleRoot();
 void handleControl();
@@ -384,6 +395,12 @@ void setup() {
   // [1] Initialize PSRAM Early
   Serial.println("1. Initializing PSRAM...");
   initPSRAM();
+
+  // Redirect mbedtls allocations to PSRAM
+  if (psramFound()) {
+    mbedtls_platform_set_calloc_free(mbedtls_psram_calloc, mbedtls_psram_free);
+    Serial.println("[TLS] mbedtls redirected to PSRAM.");
+  }
 
   // [2] Initialize Display (LovyanGFX) on SPI2
   Serial.println("2. Initializing Display...");
@@ -2040,7 +2057,7 @@ void runGlobalCapture() {
       xTaskCreatePinnedToCore(
         telegramUploadTask,   // Task function
         "TelegramTask",       // Task name
-        5120,                 // Stack size (5KB optimized)
+        8192,                 // Increased from 5KB to 8KB for SSL context
         NULL,                 // Parameters
         1,                    // Priority
         &telegramTaskHandle,  // Task handle
@@ -2666,7 +2683,7 @@ void startTelegramPollingTask() {
     xTaskCreatePinnedToCore(
       telegramPollingTask,
       "TelegramPoll",
-      8192,
+      12288,                 // Increased from 8KB for SSL context
       NULL,
       1,
       &telegramPollTaskHandle,
