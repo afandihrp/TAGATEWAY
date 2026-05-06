@@ -19,9 +19,9 @@
 String ssid = "";
 String password = "";
 
-// SD Card Configuration (HSPI)
-const int sdCS = 5;
-SPIClass sdSPI(HSPI);
+// SD Card Configuration (SPI3)
+const int sdCS = 15;
+SPIClass sdSPI(3);
 
 // Telegram Configuration (Loaded from SD)
 String botToken = "";
@@ -40,20 +40,20 @@ class LGFX : public lgfx::LGFX_Device {
 public:
   LGFX(void) {
     auto bcfg = _bus_instance.config();
-    bcfg.spi_host   = VSPI_HOST;
+    bcfg.spi_host   = SPI2_HOST;
     bcfg.spi_mode   = 0;
     bcfg.freq_write = 75000000; // Lowered for ILI9488 stability
     bcfg.freq_read  = 16000000;
-    bcfg.pin_sclk   = 18;
-    bcfg.pin_mosi   = 23;
+    bcfg.pin_sclk   = 12;
+    bcfg.pin_mosi   = 11;
     bcfg.pin_miso   = -1;       // CRITICAL: Disconnect display MISO to fix touch corruption
-    bcfg.pin_dc     = 2;
+    bcfg.pin_dc     = 8;
     _bus_instance.config(bcfg);
     _panel_instance.setBus(&_bus_instance);
 
     auto pcfg = _panel_instance.config();
-    pcfg.pin_cs   = 15;
-    pcfg.pin_rst  = 4;
+    pcfg.pin_cs   = 9;
+    pcfg.pin_rst  = 14;
     pcfg.pin_busy = -1;
     pcfg.panel_width  = 320;
     pcfg.panel_height = 480;
@@ -67,14 +67,14 @@ public:
     tcfg.x_max = 3800;
     tcfg.y_min = 3800;   // swapped
     tcfg.y_max = 300;    // swapped
-    tcfg.pin_cs     = 21;
-    tcfg.pin_int    = 27;
+    tcfg.pin_cs     = 3;
+    tcfg.pin_int    = 21;
     tcfg.bus_shared = true;
-    tcfg.spi_host   = VSPI_HOST;
+    tcfg.spi_host   = SPI2_HOST;
     tcfg.freq       = 1000000; // Lowered for reliable touch reads
-    tcfg.pin_sclk   = 18;      // Explicitly define shared pins
-    tcfg.pin_mosi   = 23;
-    tcfg.pin_miso   = 19;      // Touch controller DOES need MISO
+    tcfg.pin_sclk   = 12;      // Explicitly define shared pins
+    tcfg.pin_mosi   = 11;
+    tcfg.pin_miso   = 13;      // Touch controller DOES need MISO
     _touch_instance.config(tcfg);
     _panel_instance.setTouch(&_touch_instance);
 
@@ -185,7 +185,7 @@ WiFiUDP udp;
 WebServer server(80);
 uint32_t last_udp_send_time = 0;
 const int udpPort = 8888;
-const int buzzerPin = 26; // Moved to 26 to free HSPI MISO (12)
+const int buzzerPin = 4; // Moved to 4 for S3 layout
 
 TaskHandle_t telegramTaskHandle = NULL;
 
@@ -366,13 +366,13 @@ void setup() {
   digitalWrite(buzzerPin, LOW);
 
   // [0] Ensure all CS pins are HIGH to avoid SPI bus contention
-  pinMode(5, OUTPUT);  digitalWrite(5, HIGH);  // SD CS
-  pinMode(15, OUTPUT); digitalWrite(15, HIGH); // TFT CS
-  pinMode(21, OUTPUT); digitalWrite(21, HIGH); // Touch CS
+  pinMode(15, OUTPUT); digitalWrite(15, HIGH); // SD CS (SPI3)
+  pinMode(9, OUTPUT);  digitalWrite(9, HIGH);  // TFT CS (SPI2)
+  pinMode(3, OUTPUT);  digitalWrite(3, HIGH);  // Touch CS (SPI2)
 
-  Serial.println("\n\n--- ESP32 Gateway (Stability Mode) ---");
+  Serial.println("\n\n--- ESP32-S3 Gateway (Stability Mode) ---");
 
-  // [1] Initialize Display (LovyanGFX) on VSPI
+  // [1] Initialize Display (LovyanGFX) on SPI2
   Serial.println("1. Initializing Display...");
   tft.init();
   tft.setRotation(1); // Landscape
@@ -387,8 +387,8 @@ void setup() {
   tft.setCursor(10, 40);
   tft.print("SD Card: ");
 
-  // [2] Initialize SD Card (HSPI)
-  // Ensure VSPI pins are stable before touching HSPI
+  // [2] Initialize SD Card (SPI3)
+  // Ensure SPI2 pins are stable before touching SPI3
   delay(100); 
   if (mountSD()) {
     uint64_t totalSize = SD.totalBytes() / (1024 * 1024);
@@ -2660,9 +2660,9 @@ void playCaptureBeep() {
 }
 
 bool mountSD() {
-  Serial.println("[SD] Powering on HSPI and mounting card...");
-  // Initialize HSPI Pins: SCK=14, MISO=12, MOSI=13, CS=5
-  sdSPI.begin(14, 12, 13, sdCS);
+  Serial.println("[SD] Powering on SPI3 and mounting card...");
+  // Initialize SPI3 Pins: SCK=18, MISO=16, MOSI=17, CS=15
+  sdSPI.begin(18, 16, 17, sdCS);
   
   if (SD.begin(sdCS, sdSPI)) {
     return true;
@@ -2671,7 +2671,7 @@ bool mountSD() {
 }
 
 void unmountSD() {
-  Serial.println("[SD] Unmounting and powering off HSPI...");
+  Serial.println("[SD] Unmounting and powering off SPI3...");
   SD.end();
   sdSPI.end(); // Stop the SPI hardware entirely
 
@@ -2679,12 +2679,12 @@ void unmountSD() {
   pinMode(sdCS, OUTPUT);
   digitalWrite(sdCS, HIGH);
 
-  // Release HSPI data pins to INPUT to avoid bus contention during touch reads
-  pinMode(12, INPUT); // MISO
-  pinMode(13, INPUT); // MOSI
-  pinMode(14, INPUT); // SCK
+  // Release SPI3 data pins to INPUT to avoid bus contention
+  pinMode(16, INPUT); // MISO
+  pinMode(17, INPUT); // MOSI
+  pinMode(18, INPUT); // SCK
 
-  Serial.println("[SD] Shutdown complete. HSPI pins released.");
+  Serial.println("[SD] Shutdown complete. SPI3 pins released.");
 }
 
 bool loadConfig() {
