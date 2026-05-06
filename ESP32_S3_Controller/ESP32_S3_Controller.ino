@@ -21,7 +21,7 @@ String password = "";
 
 // SD Card Configuration (SPI3)
 const int sdCS = 15;
-SPIClass SPI3(FSPI);
+SPIClass sdSPI(HSPI);
 
 // Telegram Configuration (Loaded from SD)
 String botToken = "";
@@ -371,6 +371,13 @@ void setup() {
   pinMode(3, OUTPUT);  digitalWrite(3, HIGH);  // Touch CS (SPI2)
 
   Serial.println("\n\n--- ESP32-S3 Gateway (Stability Mode) ---");
+
+  // [1] Initialize Display (LovyanGFX) on SPI2
+  Serial.println("1. Initializing Display...");
+  tft.init();
+  tft.setRotation(1); // Landscape
+  tft.fillScreen(TFT_BLACK); // Prevent white flash on boot
+
 
   // [1] Initialize Display (LovyanGFX) on SPI2
   Serial.println("1. Initializing Display...");
@@ -2662,9 +2669,9 @@ void playCaptureBeep() {
 bool mountSD() {
   Serial.println("[SD] Powering on SPI3 and mounting card...");
   // Initialize SPI3 Pins: SCK=18, MISO=16, MOSI=17, CS=15
-  SPI3.begin(18, 16, 17, sdCS);
+  sdSPI.begin(18, 16, 17, sdCS);
   
-  if (SD.begin(sdCS, SPI3)) {
+  if (SD.begin(sdCS, sdSPI)) {
     return true;
   }
   return false;
@@ -2673,7 +2680,7 @@ bool mountSD() {
 void unmountSD() {
   Serial.println("[SD] Unmounting and powering off SPI3...");
   SD.end();
-  SPI3.end(); // Stop the SPI hardware entirely
+  sdSPI.end(); // Stop the SPI hardware entirely
 
   // Explicitly hold CS HIGH to avoid floating bus state
   pinMode(sdCS, OUTPUT);
