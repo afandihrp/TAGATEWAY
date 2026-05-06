@@ -2101,6 +2101,7 @@ bool sendPhotoToTelegram(String chatId, const char* unused_path) {
       if (attempt < maxRetries) { delay(1000); continue; }
       return false;
     }
+    delay(10); // Yield after heavy SSL handshake
 
     String boundary = "----ESP32Boundary" + String(millis());
     String head = "--" + boundary + "\r\n"
@@ -2129,14 +2130,14 @@ bool sendPhotoToTelegram(String chatId, const char* unused_path) {
       client.write(sharedBuffer + pos, toWrite);
       pos += toWrite;
       tele_progress_bytes = pos;
-      yield();
+      delay(1); // Yield more robustly than yield() during long uploads
     }
     
     client.print(tail);
     
     // Wait for response
     uint32_t start = millis();
-    while (client.connected() && millis() - start < 5000) {
+    while (client.connected() && millis() - start < 10000) {
       if (client.available()) {
         String line = client.readStringUntil('\n');
         if (line.indexOf("\"ok\":true") > 0) {
@@ -2144,6 +2145,7 @@ bool sendPhotoToTelegram(String chatId, const char* unused_path) {
           return true;
         }
       }
+      delay(1); // Yield to IDLE task to prevent WDT trigger
     }
     client.stop();
   }
