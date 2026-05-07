@@ -264,6 +264,7 @@ void telegramPollingTask(void *pvParameters);
 void handleTelegramUpdates();
 void startTelegramPollingTask();
 void sendTelegramMessage(String chatId, String text);
+void sendTelegramMessage(String chatId, String text, String replyMarkup);
 
 // Simple JSON value extractor
 int getJsonVal(String json, String key) {
@@ -2534,7 +2535,7 @@ size_t readStreamFrame() {
 }
 
 void processStream() {
-  if (!streamClient.connected()) return;
+  if (is_capturing_global || !streamClient.connected()) return;
 
   static uint16_t last_stream_w = 0;
   static uint16_t last_stream_h = 0;
@@ -2717,6 +2718,10 @@ void telegramPollingTask(void *pvParameters) {
 }
 
 void sendTelegramMessage(String chatId, String text) {
+  sendTelegramMessage(chatId, text, "");
+}
+
+void sendTelegramMessage(String chatId, String text, String replyMarkup) {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient https;
@@ -2724,9 +2729,12 @@ void sendTelegramMessage(String chatId, String text) {
 
   if (https.begin(client, url)) {
     https.addHeader("Content-Type", "application/json");
-    StaticJsonDocument<512> doc;
+    DynamicJsonDocument doc(2048);
     doc["chat_id"] = chatId;
     doc["text"] = text;
+    if (replyMarkup.length() > 0) {
+      doc["reply_markup"] = serialized(replyMarkup);
+    }
     String payload;
     serializeJson(doc, payload);
 
@@ -2739,10 +2747,24 @@ void sendTelegramMessage(String chatId, String text) {
   }
 }
 
+void answerCallbackQuery(String queryId) {
+  if (queryId == "") return;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient https;
+  String url = "https://api.telegram.org/bot" + botToken + "/answerCallbackQuery";
+  if (https.begin(client, url)) {
+    https.addHeader("Content-Type", "application/json");
+    https.POST("{\"callback_query_id\":\"" + queryId + "\"}");
+    https.end();
+  }
+}
+
 void handleTelegramUpdates() {
   String pendingCmd = "";
   String pendingChatId = "";
   String pendingFromName = "";
+  String pendingQueryId = "";
 
   // Scope block to ensure SSL client is fully destroyed before we attempt to send a reply
   {
@@ -2768,6 +2790,11 @@ void handleTelegramUpdates() {
               pendingCmd = update["message"]["text"].as<String>();
               pendingChatId = update["message"]["chat"]["id"].as<String>();
               pendingFromName = update["message"]["from"]["first_name"] | "User";
+            } else if (update.containsKey("callback_query")) {
+              pendingCmd = update["callback_query"]["data"].as<String>();
+              pendingChatId = update["callback_query"]["message"]["chat"]["id"].as<String>();
+              pendingFromName = update["callback_query"]["from"]["first_name"] | "User";
+              pendingQueryId = update["callback_query"]["id"].as<String>();
             }
           }
         }
@@ -2781,6 +2808,7 @@ void handleTelegramUpdates() {
 
   // Process the command (if any) using a fresh connection
   if (pendingCmd != "") {
+    answerCallbackQuery(pendingQueryId);
     Serial.printf("[RAM] Free: %d, Command: %s\n", ESP.getFreeHeap(), pendingCmd.c_str());
     String text = pendingCmd;
     String chatId = pendingChatId;
@@ -2792,6 +2820,7 @@ void handleTelegramUpdates() {
       String msg = "Hello " + fromName + "!\nAvailable commands:\n";
       msg += "/devices - List registered cameras\n";
       msg += "/capture {id} - Capture from a specific camera\n";
+      msg += "/getimage {dd mm yy} - Get archived images\n";
       msg += "/getstat - Show camera trigger statistics\n";
       sendTelegramMessage(chatId, msg);
     } 
@@ -2840,6 +2869,92 @@ void handleTelegramUpdates() {
         }
       }
     }
+    else if (text.startsWith("/getimage")) {
+      int args[6];
+      int count = sscanf(text.c_str(), "/getimage %d %d %d %d %d %d", &args[0], &args[1], &args[2], &args[3], &args[4], &args[5]);
+      
+      if (count == 3) {
+        if (!sdAvailable) {
+          sendTelegramMessage(chatId, "SD card not available.");
+          return;
+        }
+        char prefix[16];
+        sprintf(prefix, "%02d-%02d-%02d-", args[0], args[1], args[2]);
+        
+        DynamicJsonDocument kb(3072);
+        JsonArray rows = kb.createNestedArray("inline_keyboard");
+        
+        File root = SD.open("/");
+        int foundCount = 0;
+        while (true) {
+          File file = root.openNextFile();
+          if (!file) break;
+          String name = String(file.name());
+          if (name.startsWith("/")) name = name.substring(1);
 
+          if (name.startsWith(prefix) && name.endsWith(".jpg")) {
+            String timeStr = name.substring(9, 17); // after DD-MM-YY-
+            String label = timeStr;
+            label.replace("-", ":");
+            
+            char fullCmd[48];
+            int hh, mn, ss;
+            sscanf(timeStr.c_str(), "%d-%d-%d", &hh, &mn, &ss);
+            sprintf(fullCmd, "/getimage %02d %02d %02d %02d %02d %02d", args[0], args[1], args[2], hh, mn, ss);
+            
+            JsonArray row;
+            if (foundCount % 2 == 0) row = rows.createNestedArray();
+            else row = rows[rows.size() - 1];
+            
+            JsonObject btn = row.createNestedObject();
+            btn["text"] = label;
+            btn["callback_data"] = String(fullCmd);
+            
+            foundCount++;
+            if (foundCount >= 40) break;
+          }
+          file.close();
+        }
+        root.close();
+        
+        if (foundCount == 0) {
+          sendTelegramMessage(chatId, "No images found for " + String(prefix).substring(0, 8));
+        } else {
+          String kbStr;
+          serializeJson(kb, kbStr);
+          sendTelegramMessage(chatId, "Found " + String(foundCount) + " images for " + String(prefix).substring(0, 8) + ". Select one:", kbStr);
+        }
+      } else if (count == 6) {
+        if (!sdAvailable) {
+          sendTelegramMessage(chatId, "SD card not available.");
+          return;
+        }
+        char filename[32];
+        sprintf(filename, "/%02d-%02d-%02d-%02d-%02d-%02d.jpg", args[0], args[1], args[2], args[3], args[4], args[5]);
+        
+        if (SD.exists(filename)) {
+          if (is_capturing_global) {
+             sendTelegramMessage(chatId, "System busy. Try again.");
+             return;
+          }
+          is_capturing_global = true; 
+          File file = SD.open(filename, FILE_READ);
+          sharedBufferSize = file.size();
+          if (sharedBufferSize > MAX_BUFFER_SIZE) {
+            sendTelegramMessage(chatId, "Error: Image too large.");
+            is_capturing_global = false;
+          } else {
+            file.read(sharedBuffer, sharedBufferSize);
+            file.close();
+            sendTelegramMessage(chatId, "Sending archived image: " + String(filename));
+            startTeleUpload = true; 
+          }
+        } else {
+          sendTelegramMessage(chatId, "File not found: " + String(filename));
+        }
+      } else {
+        sendTelegramMessage(chatId, "Usage: /getimage DD MM YY\nExample: /getimage 07 05 26");
+      }
+    }
   }
 }
