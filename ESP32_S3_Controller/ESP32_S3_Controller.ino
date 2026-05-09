@@ -189,6 +189,9 @@ WebServer server(80);
 uint32_t last_udp_send_time = 0;
 const int udpPort = 8888;
 const int buzzerPin = 4; // Moved to 4 for S3 layout
+bool fenceWasBroken = false;
+float fenceVoltage = 3.3;
+
 
 TaskHandle_t telegramTaskHandle = NULL;
 
@@ -228,6 +231,9 @@ void handleImage();
 void handleStatus();
 void handleDevices();
 void handleRegister();
+void handleData();
+void checkFenceCondition(float voltage);
+
 bool captureImage(String targetIP, const char* path, const char* path2 = NULL);
 void processStatistic(bool increment = false);
 String getArchiveFilename();
@@ -700,6 +706,9 @@ void setup() {
   server.on("/status", handleStatus);
   server.on("/devices", handleDevices);
   server.on("/register", HTTP_POST, handleRegister);
+  server.on("/data", handleData);
+
+
   
   server.onNotFound([]() {
     server.send(404, "text/plain", "Not Found");
@@ -2988,3 +2997,34 @@ void handleTelegramUpdates() {
     }
   }
 }
+
+void handleData() {
+  if (server.hasArg("value")) {
+    float voltage = server.arg("value").toFloat();
+    fenceVoltage = voltage;
+    checkFenceCondition(voltage);
+    server.send(200, "application/json", "{\"status\": \"ok\"}");
+  } else {
+    server.send(400, "application/json", "{\"error\": \"Missing value\"}");
+  }
+}
+
+void checkFenceCondition(float voltage) {
+  // Assuming 3.3V is normal (connected) and near 0V is broken (pulled down)
+  if (voltage < 1.0) { 
+    if (!fenceWasBroken) {
+      fenceWasBroken = true;
+      Serial.println("[ALARM] Fence Cable CUT!");
+      digitalWrite(buzzerPin, HIGH);
+      sendTelegramMessage(targetChatId, "🚨 ALARM: Kabel pagar terputus! Segera periksa lokasi lahan.");
+    }
+  } else {
+    if (fenceWasBroken) {
+      fenceWasBroken = false;
+      Serial.println("[INFO] Fence Cable Restored.");
+      digitalWrite(buzzerPin, LOW);
+      sendTelegramMessage(targetChatId, "ℹ️ INFO: Kabel pagar telah tersambung kembali.");
+    }
+  }
+}
+
