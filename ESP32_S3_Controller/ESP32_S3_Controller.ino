@@ -27,7 +27,7 @@ SPIClass sdSPI(HSPI);
 // Telegram Configuration (Loaded from SD)
 String botToken = "";
 String targetChatId = "";
-bool startTeleUpload = false;
+volatile bool startTeleUpload = false;
 uint32_t lastPollingTime = 0;
 
 // Display Configuration
@@ -55,7 +55,7 @@ public:
     _panel_instance.setBus(&_bus_instance);
 
     auto pcfg = _panel_instance.config();
-    pcfg.pin_cs   = 9;
+    pcfg.pin_cs   = 9; 
     pcfg.pin_rst  = 14;
     pcfg.pin_busy = -1;
     pcfg.panel_width  = 320;
@@ -2779,8 +2779,20 @@ void handleTelegramUpdates() {
       int httpCode = https.GET();
       if (httpCode == HTTP_CODE_OK) {
         String payload = https.getString();
+        
+        StaticJsonDocument<256> filter;
+        filter["ok"] = true;
+        filter["result"][0]["update_id"] = true;
+        filter["result"][0]["message"]["text"] = true;
+        filter["result"][0]["message"]["chat"]["id"] = true;
+        filter["result"][0]["message"]["from"]["first_name"] = true;
+        filter["result"][0]["callback_query"]["data"] = true;
+        filter["result"][0]["callback_query"]["id"] = true;
+        filter["result"][0]["callback_query"]["message"]["chat"]["id"] = true;
+        filter["result"][0]["callback_query"]["from"]["first_name"] = true;
+
         DynamicJsonDocument doc(3072); // Reduced from 4096 to save RAM
-        DeserializationError error = deserializeJson(doc, payload);
+        DeserializationError error = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
 
         if (!error && doc["ok"]) {
           JsonArray results = doc["result"];
@@ -2869,11 +2881,12 @@ void handleTelegramUpdates() {
         }
       }
     }
-    else if (text.startsWith("/getimage")) {
-      int args[6];
-      int count = sscanf(text.c_str(), "/getimage %d %d %d %d %d %d", &args[0], &args[1], &args[2], &args[3], &args[4], &args[5]);
+    else if (text.startsWith("/getimage ")) {
+      int args[4];
+      int count = sscanf(text.c_str(), "/getimage %d %d %d %d", &args[0], &args[1], &args[2], &args[3]);
       
-      if (count == 3) {
+      if (count == 3 || count == 4) {
+        int offset = (count == 4) ? args[3] : 0;
         if (!sdAvailable) {
           sendTelegramMessage(chatId, "SD card not available.");
           return;
@@ -2881,11 +2894,12 @@ void handleTelegramUpdates() {
         char prefix[16];
         sprintf(prefix, "%02d-%02d-%02d-", args[0], args[1], args[2]);
         
-        DynamicJsonDocument kb(3072);
-        JsonArray rows = kb.createNestedArray("inline_keyboard");
-        
         File root = SD.open("/");
-        int foundCount = 0;
+        int matchCount = 0;
+        int displayedCount = 0;
+        String msg = "Images for " + String(prefix).substring(0, 8) + ":\n";
+        bool hasMore = false;
+        
         while (true) {
           File file = root.openNextFile();
           if (!file) break;
@@ -2893,38 +2907,45 @@ void handleTelegramUpdates() {
           if (name.startsWith("/")) name = name.substring(1);
 
           if (name.startsWith(prefix) && name.endsWith(".jpg")) {
-            String timeStr = name.substring(9, 17); // after DD-MM-YY-
-            String label = timeStr;
-            label.replace("-", ":");
-            
-            char fullCmd[48];
-            int hh, mn, ss;
-            sscanf(timeStr.c_str(), "%d-%d-%d", &hh, &mn, &ss);
-            sprintf(fullCmd, "/getimage %02d %02d %02d %02d %02d %02d", args[0], args[1], args[2], hh, mn, ss);
-            
-            JsonArray row;
-            if (foundCount % 2 == 0) row = rows.createNestedArray();
-            else row = rows[rows.size() - 1];
-            
-            JsonObject btn = row.createNestedObject();
-            btn["text"] = label;
-            btn["callback_data"] = String(fullCmd);
-            
-            foundCount++;
-            if (foundCount >= 40) break;
+            if (matchCount >= offset) {
+              if (displayedCount < 20) {
+                String timeStr = name.substring(9, 17); // HH-MM-SS
+                int hh, mn, ss;
+                sscanf(timeStr.c_str(), "%d-%d-%d", &hh, &mn, &ss);
+                
+                char cmd[48];
+                sprintf(cmd, "/getimage_%02d_%02d_%02d_%02d_%02d_%02d", args[0], args[1], args[2], hh, mn, ss);
+                msg += String(cmd) + "\n";
+                displayedCount++;
+              } else {
+                hasMore = true;
+                file.close();
+                break;
+              }
+            }
+            matchCount++;
           }
           file.close();
         }
         root.close();
         
-        if (foundCount == 0) {
-          sendTelegramMessage(chatId, "No images found for " + String(prefix).substring(0, 8));
+        if (displayedCount == 0 && offset == 0) {
+          sendTelegramMessage(chatId, "No images found.");
         } else {
-          String kbStr;
-          serializeJson(kb, kbStr);
-          sendTelegramMessage(chatId, "Found " + String(foundCount) + " images for " + String(prefix).substring(0, 8) + ". Select one:", kbStr);
+          if (hasMore) {
+            char nextCmd[48];
+            sprintf(nextCmd, "\nNext page: /getimage %02d %02d %02d %d", args[0], args[1], args[2], offset + 20);
+            msg += String(nextCmd);
+          }
+          sendTelegramMessage(chatId, msg);
         }
-      } else if (count == 6) {
+      }
+    }
+    else if (text.startsWith("/getimage_")) {
+      int args[6];
+      int count = sscanf(text.c_str(), "/getimage_%d_%d_%d_%d_%d_%d", &args[0], &args[1], &args[2], &args[3], &args[4], &args[5]);
+      
+      if (count == 6) {
         if (!sdAvailable) {
           sendTelegramMessage(chatId, "SD card not available.");
           return;
@@ -2939,9 +2960,15 @@ void handleTelegramUpdates() {
           }
           is_capturing_global = true; 
           File file = SD.open(filename, FILE_READ);
+          if (!file) {
+            sendTelegramMessage(chatId, "Error: Could not open file.");
+            is_capturing_global = false;
+            return;
+          }
           sharedBufferSize = file.size();
           if (sharedBufferSize > MAX_BUFFER_SIZE) {
             sendTelegramMessage(chatId, "Error: Image too large.");
+            file.close();
             is_capturing_global = false;
           } else {
             file.read(sharedBuffer, sharedBufferSize);
@@ -2953,8 +2980,11 @@ void handleTelegramUpdates() {
           sendTelegramMessage(chatId, "File not found: " + String(filename));
         }
       } else {
-        sendTelegramMessage(chatId, "Usage: /getimage DD MM YY\nExample: /getimage 07 05 26");
+        sendTelegramMessage(chatId, "Invalid command format.");
       }
+    }
+    else if (text.startsWith("/getimage")) {
+      sendTelegramMessage(chatId, "Usage: /getimage DD MM YY\nExample: /getimage 07 05 26");
     }
   }
 }
